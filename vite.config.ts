@@ -17,6 +17,7 @@ export default defineConfig({
           vendor: ['react', 'react-dom'],
           motion: ['framer-motion'],
           icons: ['lucide-react'],
+          excel: ['xlsx'],
         },
       },
     },

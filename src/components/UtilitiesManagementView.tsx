@@ -1,12 +1,20 @@
 import React, { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { CheckCircle2, Droplets, MessageCircle, Save, Zap } from 'lucide-react';
+import { DEFAULT_WATER_FLAT_FEE, REDUCED_WATER_FLAT_FEE } from '@config/constants';
 import { useApp } from '../context/AppContext';
 import { RentalUnit } from '../types';
-import { formatFCFA, sanitizePhoneForWhatsApp } from '../utils/formatters';
+import {
+  calculateUnitSeparatedBalances,
+  formatFCFA,
+  sanitizePhoneForWhatsApp,
+} from '../utils/formatters';
 
 interface UtilitiesManagementViewProps {
-  onSelectUnit: (unit: RentalUnit, initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES') => void;
+  onSelectUnit: (
+    unit: RentalUnit,
+    initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES' | 'DOCUMENTS'
+  ) => void;
 }
 
 export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = ({
@@ -21,55 +29,67 @@ export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = (
     return units.filter((u) => {
       if (u.status === 'VACANT') return false;
       if (floorFilter !== 'ALL' && u.floor !== floorFilter) return false;
-      if (onlyUnpaid && u.utilities.waterPaid && u.utilities.electricityPaid) return false;
+      if (onlyUnpaid) {
+        const bal = calculateUnitSeparatedBalances(u);
+        if (bal.waterRemainingDue === 0 && bal.electricityRemainingDue === 0) return false;
+      }
       return true;
     });
   }, [units, floorFilter, onlyUnpaid]);
 
   const summary = useMemo(() => {
     const active = units.filter((u) => u.status !== 'VACANT');
-    const totalWaterBilled = active.reduce((acc, u) => acc + u.utilities.waterAmountDue, 0);
-    const totalWaterUnpaid = active.reduce(
-      (acc, u) => acc + (u.utilities.waterPaid ? 0 : u.utilities.waterAmountDue),
+    const totalWaterBilled = active.reduce(
+      (acc, u) => acc + calculateUnitSeparatedBalances(u).waterFlatFee,
       0
     );
-    const totalElecBilled = active.reduce((acc, u) => acc + u.utilities.electricityAmountDue, 0);
+    const totalWaterUnpaid = active.reduce(
+      (acc, u) => acc + calculateUnitSeparatedBalances(u).waterRemainingDue,
+      0
+    );
+    const totalElecBilled = active.reduce(
+      (acc, u) => acc + calculateUnitSeparatedBalances(u).electricityBilled,
+      0
+    );
+    const totalElecPaidAdvances = active.reduce(
+      (acc, u) => acc + calculateUnitSeparatedBalances(u).electricityPaidAmount,
+      0
+    );
     const totalElecUnpaid = active.reduce(
-      (acc, u) => acc + (u.utilities.electricityPaid ? 0 : u.utilities.electricityAmountDue),
+      (acc, u) => acc + calculateUnitSeparatedBalances(u).electricityRemainingDue,
       0
     );
     return {
       totalWaterBilled,
       totalWaterUnpaid,
       totalElecBilled,
+      totalElecPaidAdvances,
       totalElecUnpaid,
     };
   }, [units]);
 
-  const handleQuickIndexUpdate = (
+  const handleQuickUtilityUpdate = (
     unit: RentalUnit,
-    newWaterIdx: number,
-    newElecIdx: number,
+    newWaterFlatFee: number,
     waterPaid: boolean,
+    elecBilled: number,
+    elecPaidAmount: number,
     elecPaid: boolean
   ) => {
-    const waterDiff = Math.max(0, newWaterIdx - unit.utilities.waterOldIndex);
-    const elecDiff = Math.max(0, newElecIdx - unit.utilities.electricityOldIndex);
+    const remainingElec = Math.max(0, elecBilled - elecPaidAmount);
+    const creditElec = Math.max(0, elecPaidAmount - elecBilled);
 
     updateUtilityReading(unit.id, {
       ...unit.utilities,
-      waterNewIndex: newWaterIdx,
-      waterAmountDue:
-        unit.utilities.waterMode === 'METER'
-          ? waterDiff * settings.waterM3Price
-          : unit.utilities.waterAmountDue,
+      waterMode: 'FLAT',
+      waterFlatFee: newWaterFlatFee,
+      waterAmountDue: newWaterFlatFee,
       waterPaid,
-      electricityNewIndex: newElecIdx,
-      electricityAmountDue:
-        unit.utilities.electricityMode === 'METER'
-          ? elecDiff * settings.electricityKwhPrice
-          : unit.utilities.electricityAmountDue,
-      electricityPaid: elecPaid,
+      electricityAmountDue: elecBilled,
+      electricityAmountPaid: elecPaidAmount,
+      electricityBalanceDue: remainingElec,
+      electricityCredit: creditElec,
+      electricityPaid: elecPaid || remainingElec === 0,
       lastReadingDate: '2026-10-26',
     });
 
@@ -79,20 +99,17 @@ export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = (
 
   const buildUtilityWhatsApp = (u: RentalUnit) => {
     const phone = sanitizePhoneForWhatsApp(u.tenant?.phone || '');
-    const waterConso = Math.max(0, u.utilities.waterNewIndex - u.utilities.waterOldIndex);
-    const elecConso = Math.max(
-      0,
-      u.utilities.electricityNewIndex - u.utilities.electricityOldIndex
-    );
-    const totalDue =
-      (u.utilities.waterPaid ? 0 : u.utilities.waterAmountDue) +
-      (u.utilities.electricityPaid ? 0 : u.utilities.electricityAmountDue);
+    const bal = calculateUnitSeparatedBalances(u);
+    const totalDue = bal.waterRemainingDue + bal.electricityRemainingDue;
 
     const msg =
       `Bonjour ${u.tenant?.fullName || ''},\n\n` +
-      `Voici le relevé des sous-compteurs du mois pour votre logement *${u.code}* (*Résidence Moro*) :\n` +
-      `💧 *Eau (Forage)* : Index ${u.utilities.waterOldIndex} → ${u.utilities.waterNewIndex} (${waterConso} m³) = *${formatFCFA(u.utilities.waterAmountDue)}* (${u.utilities.waterPaid ? 'Payé' : 'À régler'})\n` +
-      `⚡ *Électricité (ENEO)* : Index ${u.utilities.electricityOldIndex} → ${u.utilities.electricityNewIndex} (${elecConso} kWh) = *${formatFCFA(u.utilities.electricityAmountDue)}* (${u.utilities.electricityPaid ? 'Payé' : 'À régler'})\n` +
+      `Voici le point mensuel Eau (Forfait Forage) & Électricité (ENEO) pour votre logement *${u.code}* (*Résidence Moro*) :\n` +
+      `💧 *Forfait Mensuel Eau (Forage)* : *${formatFCFA(bal.waterFlatFee)} / mois* (${bal.waterRemainingDue === 0 ? 'Payé' : `Reste à payer : ${formatFCFA(bal.waterRemainingDue)}`})\n` +
+      `⚡ *Électricité (ENEO)* :\n` +
+      `   • Montant Facturé ENEO : ${formatFCFA(bal.electricityBilled)}\n` +
+      `   • Avance / Acompte versé : ${formatFCFA(bal.electricityPaidAmount)}\n` +
+      `   • *Reste à payer Électricité : ${formatFCFA(bal.electricityRemainingDue)}*\n` +
       `----------------------------------\n` +
       `• *Net à régler Eau + ENEO : ${formatFCFA(totalDue)}*\n` +
       `Règlement Orange Money : ${settings.orangeMoneyNumber} / MTN MoMo : ${settings.mtnMomoNumber}.\n` +
@@ -103,30 +120,30 @@ export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = (
 
   return (
     <div className="space-y-6">
-      {/* KPIs Eau (Forage) & Électricité (ENEO) */}
+      {/* KPIs Forfait Eau (Forage) & Électricité (ENEO) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-2xl p-5 border border-blue-200 shadow-sm">
           <div className="flex items-center justify-between text-xs font-extrabold uppercase tracking-wider text-[#2563EB] mb-1">
-            <span>Eau du Forage Facturée</span>
+            <span>Forfaits Eau Facturés</span>
             <Droplets className="w-4 h-4" />
           </div>
           <div className="text-2xl font-extrabold text-[#0F172A]">
             {formatFCFA(summary.totalWaterBilled)}
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Tarif unitaire actif : <strong>{formatFCFA(settings.waterM3Price)} / m³</strong>
+            Forfait mensuel sans compteur : <strong>2 000 FCFA ou 1 500 FCFA</strong>
           </p>
         </div>
 
         <div className="bg-white rounded-2xl p-5 border border-amber-200 shadow-sm">
           <div className="flex items-center justify-between text-xs font-extrabold uppercase tracking-wider text-amber-800 mb-1">
-            <span>Eau Restant à Encaisser</span>
+            <span>Forfaits Eau à Recouvrer</span>
             <Droplets className="w-4 h-4 text-amber-600" />
           </div>
           <div className="text-2xl font-extrabold text-[#B45309]">
             {formatFCFA(summary.totalWaterUnpaid)}
           </div>
-          <p className="text-xs text-slate-500 mt-1">Sous-compteurs non soldés ce mois</p>
+          <p className="text-xs text-slate-500 mt-1">Forfaits mensuels en attente</p>
         </div>
 
         <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm">
@@ -137,20 +154,20 @@ export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = (
           <div className="text-2xl font-extrabold text-[#0F172A]">
             {formatFCFA(summary.totalElecBilled)}
           </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Tarif unitaire actif : <strong>{formatFCFA(settings.electricityKwhPrice)} / kWh</strong>
+          <p className="text-xs text-[#065F46] font-bold mt-1">
+            Avances versées : +{formatFCFA(summary.totalElecPaidAdvances)}
           </p>
         </div>
 
         <div className="bg-white rounded-2xl p-5 border border-red-200 shadow-sm">
           <div className="flex items-center justify-between text-xs font-extrabold uppercase tracking-wider text-[#EF4444] mb-1">
-            <span>ENEO Restant à Encaisser</span>
+            <span>Reste à Payer Électricité</span>
             <Zap className="w-4 h-4" />
           </div>
           <div className="text-2xl font-extrabold text-[#991B1B]">
             {formatFCFA(summary.totalElecUnpaid)}
           </div>
-          <p className="text-xs text-slate-500 mt-1">Factures sous-compteurs en attente</p>
+          <p className="text-xs text-slate-500 mt-1">Facturé ENEO - Avances versées</p>
         </div>
       </div>
 
@@ -188,19 +205,18 @@ export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = (
             onChange={(e) => setOnlyUnpaid(e.target.checked)}
             className="w-4 h-4 rounded text-[#2563EB]"
           />
-          <span>Afficher uniquement les portes ayant un impayé Eau ou ENEO</span>
+          <span>Afficher uniquement les logements ayant un reste à payer Eau ou Électricité</span>
         </label>
       </div>
 
-      {/* Tableau de Saisie Rapide des Index par Porte */}
+      {/* Tableau Forfait Eau Fixe (2000 / 1500 FCFA) & Mini-Compte Courant Électricité */}
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="p-5 border-b border-slate-200">
           <h3 className="text-lg font-extrabold text-[#0F172A]">
-            Relevé des Sous-Compteurs Individuels (Ancien Index → Nouvel Index → Calcul Automatique)
+            Forfait Eau Mensuel (2 000 ou 1 500 FCFA) & Compte Courant Électricité (ENEO)
           </h3>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Modifiez directement le nouvel index d’une porte : le montant en FCFA se recalcule
-            instantanément selon vos tarifs.
+            Choisissez en 1 clic le forfait d’eau du logement (2 000 FCFA ou 1 500 FCFA) et saisissez le montant facturé ENEO ainsi que l’avance versée pour calculer automatiquement le reste à payer.
           </p>
         </div>
 
@@ -209,10 +225,11 @@ export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = (
             <thead>
               <tr className="bg-[#0F172A] text-white text-xs uppercase tracking-wider">
                 <th className="py-3.5 px-4 font-extrabold">Porte & Locataire</th>
-                <th className="py-3.5 px-4 font-extrabold">💧 Eau Forage (m³)</th>
-                <th className="py-3.5 px-4 font-extrabold">Montant Eau</th>
-                <th className="py-3.5 px-4 font-extrabold">⚡ Électricité ENEO (kWh)</th>
-                <th className="py-3.5 px-4 font-extrabold">Montant ENEO</th>
+                <th className="py-3.5 px-4 font-extrabold">💧 Forfait Eau Fixe (Sans Compteur)</th>
+                <th className="py-3.5 px-4 font-extrabold">Statut Eau</th>
+                <th className="py-3.5 px-4 font-extrabold">⚡ Facturé ENEO</th>
+                <th className="py-3.5 px-4 font-extrabold">Avance / Versé Élec</th>
+                <th className="py-3.5 px-4 font-extrabold">Reste à Payer Élec</th>
                 <th className="py-3.5 px-4 font-extrabold text-right">Actions</th>
               </tr>
             </thead>
@@ -221,10 +238,8 @@ export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = (
                 <UtilityRow
                   key={u.id}
                   unit={u}
-                  waterPrice={settings.waterM3Price}
-                  elecPrice={settings.electricityKwhPrice}
                   isSaved={savedCode === u.code}
-                  onSave={handleQuickIndexUpdate}
+                  onSave={handleQuickUtilityUpdate}
                   onOpenDetail={() => onSelectUnit(u, 'UTILITIES')}
                   whatsappUrl={buildUtilityWhatsApp(u)}
                 />
@@ -239,14 +254,13 @@ export const UtilitiesManagementView: React.FC<UtilitiesManagementViewProps> = (
 
 interface UtilityRowProps {
   unit: RentalUnit;
-  waterPrice: number;
-  elecPrice: number;
   isSaved: boolean;
   onSave: (
     unit: RentalUnit,
-    newWaterIdx: number,
-    newElecIdx: number,
+    waterFlatFee: number,
     waterPaid: boolean,
+    elecBilled: number,
+    elecPaidAmount: number,
     elecPaid: boolean
   ) => void;
   onOpenDetail: () => void;
@@ -255,23 +269,20 @@ interface UtilityRowProps {
 
 const UtilityRow: React.FC<UtilityRowProps> = ({
   unit,
-  waterPrice,
-  elecPrice,
   isSaved,
   onSave,
   onOpenDetail,
   whatsappUrl,
 }) => {
-  const [waterNew, setWaterNew] = useState(unit.utilities.waterNewIndex);
-  const [waterPaid, setWaterPaid] = useState(unit.utilities.waterPaid);
-  const [elecNew, setElecNew] = useState(unit.utilities.electricityNewIndex);
-  const [elecPaid, setElecPaid] = useState(unit.utilities.electricityPaid);
+  const initialBalances = calculateUnitSeparatedBalances(unit);
+  const [waterFee, setWaterFee] = useState<number>(initialBalances.waterFlatFee);
+  const [waterPaid, setWaterPaid] = useState<boolean>(unit.utilities.waterPaid);
+  const [elecBilled, setElecBilled] = useState<number>(initialBalances.electricityBilled);
+  const [elecPaidAmt, setElecPaidAmt] = useState<number>(initialBalances.electricityPaidAmount);
+  const [elecPaid, setElecPaid] = useState<boolean>(unit.utilities.electricityPaid);
 
-  const waterConso = Math.max(0, waterNew - unit.utilities.waterOldIndex);
-  const waterAmount = waterConso * waterPrice;
-
-  const elecConso = Math.max(0, elecNew - unit.utilities.electricityOldIndex);
-  const elecAmount = elecConso * elecPrice;
+  const elecRemaining = Math.max(0, elecBilled - elecPaidAmt);
+  const elecCredit = Math.max(0, elecPaidAmt - elecBilled);
 
   return (
     <motion.tr className="hover:bg-slate-50/90">
@@ -288,24 +299,45 @@ const UtilityRow: React.FC<UtilityRowProps> = ({
         </button>
       </td>
 
+      {/* Sélecteur rapide Forfait Eau : 2 000 FCFA / 1 500 FCFA / Personnalisé */}
       <td className="py-3.5 px-4">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-slate-500">
-            Ancien : {unit.utilities.waterOldIndex} →
-          </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setWaterFee(DEFAULT_WATER_FLAT_FEE)}
+            className={`px-2.5 py-1 rounded-lg text-xs font-extrabold border cursor-pointer ${
+              waterFee === DEFAULT_WATER_FLAT_FEE
+                ? 'bg-[#2563EB] text-white border-[#2563EB]'
+                : 'bg-white text-slate-700 border-slate-300'
+            }`}
+          >
+            2 000 F
+          </button>
+          <button
+            type="button"
+            onClick={() => setWaterFee(REDUCED_WATER_FLAT_FEE)}
+            className={`px-2.5 py-1 rounded-lg text-xs font-extrabold border cursor-pointer ${
+              waterFee === REDUCED_WATER_FLAT_FEE
+                ? 'bg-[#2563EB] text-white border-[#2563EB]'
+                : 'bg-white text-slate-700 border-slate-300'
+            }`}
+          >
+            1 500 F
+          </button>
           <input
             type="number"
-            aria-label={`Nouvel index eau ${unit.code}`}
-            value={waterNew}
-            onChange={(e) => setWaterNew(Number(e.target.value))}
-            className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-300 font-extrabold text-sm text-[#0F172A]"
+            step={500}
+            aria-label={`Forfait eau ${unit.code}`}
+            value={waterFee}
+            onChange={(e) => setWaterFee(Number(e.target.value))}
+            className="w-20 px-2 py-1 rounded-lg border border-slate-300 font-extrabold text-xs text-[#0F172A]"
           />
-          <span className="text-xs font-bold text-blue-700">({waterConso} m³)</span>
         </div>
       </td>
 
+      {/* Statut Eau */}
       <td className="py-3.5 px-4">
-        <div className="font-extrabold text-[#1E3A8A]">{formatFCFA(waterAmount)}</div>
+        <div className="font-extrabold text-[#1E3A8A]">{formatFCFA(waterFee)}</div>
         <label className="inline-flex items-center gap-1.5 text-xs font-bold mt-1 cursor-pointer">
           <input
             type="checkbox"
@@ -314,47 +346,59 @@ const UtilityRow: React.FC<UtilityRowProps> = ({
             className="rounded text-[#10B981]"
           />
           <span className={waterPaid ? 'text-[#065F46]' : 'text-[#EF4444]'}>
-            {waterPaid ? 'Payé' : 'Impayé'}
+            {waterPaid ? 'Payé' : 'À régler'}
           </span>
         </label>
       </td>
 
+      {/* Facturé ENEO */}
       <td className="py-3.5 px-4">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-slate-500">
-            Ancien : {unit.utilities.electricityOldIndex} →
-          </span>
-          <input
-            type="number"
-            aria-label={`Nouvel index électricité ${unit.code}`}
-            value={elecNew}
-            onChange={(e) => setElecNew(Number(e.target.value))}
-            className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-300 font-extrabold text-sm text-[#0F172A]"
-          />
-          <span className="text-xs font-bold text-amber-800">({elecConso} kWh)</span>
-        </div>
+        <input
+          type="number"
+          step={100}
+          aria-label={`Facturé ENEO ${unit.code}`}
+          value={elecBilled}
+          onChange={(e) => setElecBilled(Number(e.target.value))}
+          className="w-24 px-2.5 py-1.5 rounded-lg border border-slate-300 font-extrabold text-sm text-[#0F172A]"
+        />
       </td>
 
+      {/* Montant Versé (Avance / Acompte Électricité) */}
       <td className="py-3.5 px-4">
-        <div className="font-extrabold text-amber-900">{formatFCFA(elecAmount)}</div>
-        <label className="inline-flex items-center gap-1.5 text-xs font-bold mt-1 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={elecPaid}
-            onChange={(e) => setElecPaid(e.target.checked)}
-            className="rounded text-[#10B981]"
-          />
-          <span className={elecPaid ? 'text-[#065F46]' : 'text-[#EF4444]'}>
-            {elecPaid ? 'Payé' : 'Impayé'}
-          </span>
-        </label>
+        <input
+          type="number"
+          step={500}
+          aria-label={`Avance versée électricité ${unit.code}`}
+          value={elecPaidAmt}
+          onChange={(e) => {
+            const val = Number(e.target.value);
+            setElecPaidAmt(val);
+            setElecPaid(val >= elecBilled);
+          }}
+          className="w-24 px-2.5 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50/40 font-extrabold text-sm text-[#065F46]"
+        />
+      </td>
+
+      {/* Reste à Payer Électricité */}
+      <td className="py-3.5 px-4">
+        {elecCredit > 0 ? (
+          <div className="font-extrabold text-[#065F46]">
+            Crédit +{formatFCFA(elecCredit)}
+          </div>
+        ) : (
+          <div className={`font-extrabold ${elecRemaining > 0 ? 'text-[#B45309]' : 'text-[#065F46]'}`}>
+            {elecRemaining > 0 ? formatFCFA(elecRemaining) : '0 FCFA (Soldé)'}
+          </div>
+        )}
       </td>
 
       <td className="py-3.5 px-4 text-right">
         <div className="flex items-center justify-end gap-2">
           <button
             type="button"
-            onClick={() => onSave(unit, waterNew, elecNew, waterPaid, elecPaid)}
+            onClick={() =>
+              onSave(unit, waterFee, waterPaid, elecBilled, elecPaidAmt, elecPaid || elecRemaining === 0)
+            }
             className={`px-3 py-2 rounded-xl font-bold text-xs flex items-center gap-1.5 cursor-pointer ${
               isSaved
                 ? 'bg-[#10B981] text-white'
@@ -369,11 +413,11 @@ const UtilityRow: React.FC<UtilityRowProps> = ({
             href={whatsappUrl}
             target="_blank"
             rel="noopener noreferrer"
-            title="Envoyer la facture Eau & ENEO par WhatsApp"
+            title="Envoyer le décompte Forfait Eau & ENEO par WhatsApp"
             className="px-3 py-2 rounded-xl bg-emerald-50 hover:bg-[#10B981] text-[#065F46] hover:text-white border border-emerald-200 font-bold text-xs flex items-center gap-1"
           >
             <MessageCircle className="w-3.5 h-3.5" />
-            <span>Facture WA</span>
+            <span>WA</span>
           </a>
         </div>
       </td>

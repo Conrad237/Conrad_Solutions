@@ -14,16 +14,24 @@ import { useApp } from '../context/AppContext';
 import { PaymentRecord, RentalUnit, UnitStatus } from '../types';
 import {
   buildGuarantorWhatsAppUrl,
+  buildPreventiveThreeMonthsWhatsAppUrl,
   buildReceiptWhatsAppUrl,
   buildTenantWhatsAppUrl,
+  calculateUnitSeparatedBalances,
   formatDateFR,
   formatFCFA,
   getPaymentMethodLabel,
+  getRemainingMonthsCovered,
   getStatusConfig,
+  getUnitTypeLabel,
+  isPreventiveThreeMonthsAlert,
 } from '../utils/formatters';
 
 interface TenantsAndPaymentsViewProps {
-  onSelectUnit: (unit: RentalUnit, initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES') => void;
+  onSelectUnit: (
+    unit: RentalUnit,
+    initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES' | 'DOCUMENTS'
+  ) => void;
   onOpenReceipt: (payment: PaymentRecord) => void;
 }
 
@@ -33,7 +41,9 @@ export const TenantsAndPaymentsView: React.FC<TenantsAndPaymentsViewProps> = ({
 }) => {
   const { units, payments, settings } = useApp();
   const [section, setSection] = useState<'TENANTS' | 'RECEIPTS'>('TENANTS');
-  const [statusFilter, setStatusFilter] = useState<UnitStatus | 'ALL' | 'DEPOSIT_INCOMPLETE'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<
+    UnitStatus | 'ALL' | 'DEPOSIT_INCOMPLETE' | 'ALERT_3_MONTHS'
+  >('ALL');
   const [search, setSearch] = useState('');
 
   const filteredUnits = useMemo(() => {
@@ -41,6 +51,8 @@ export const TenantsAndPaymentsView: React.FC<TenantsAndPaymentsViewProps> = ({
       if (statusFilter === 'DEPOSIT_INCOMPLETE') {
         if (!u.tenant) return false;
         if (u.tenant.depositPaid >= u.tenant.depositRequired) return false;
+      } else if (statusFilter === 'ALERT_3_MONTHS') {
+        if (!isPreventiveThreeMonthsAlert(u)) return false;
       } else if (statusFilter !== 'ALL' && u.status !== statusFilter) {
         return false;
       }
@@ -131,6 +143,12 @@ export const TenantsAndPaymentsView: React.FC<TenantsAndPaymentsViewProps> = ({
                 label: `🟢 À Jour (${units.filter((u) => u.status === 'PAID').length})`,
               },
               {
+                id: 'ALERT_3_MONTHS',
+                label: `🔔 Alerte <= 3 mois restants (${
+                  units.filter((u) => isPreventiveThreeMonthsAlert(u)).length
+                })`,
+              },
+              {
                 id: 'DEPOSIT_INCOMPLETE',
                 label: `⚠️ Caution à compléter (${
                   units.filter((u) => u.tenant && u.tenant.depositPaid < u.tenant.depositRequired)
@@ -176,6 +194,7 @@ export const TenantsAndPaymentsView: React.FC<TenantsAndPaymentsViewProps> = ({
                 <tbody className="divide-y divide-slate-200 text-sm">
                   {filteredUnits.map((u) => {
                     const statusCfg = getStatusConfig(u.status);
+                    const balances = calculateUnitSeparatedBalances(u);
                     const depositDiff = u.tenant
                       ? Math.max(0, u.tenant.depositRequired - u.tenant.depositPaid)
                       : 0;
@@ -190,11 +209,11 @@ export const TenantsAndPaymentsView: React.FC<TenantsAndPaymentsViewProps> = ({
                             <span className="px-2.5 py-1 rounded-lg bg-[#0F172A] text-white text-xs font-extrabold">
                               {u.code}
                             </span>
-                            <span>{u.type === 'STUDIO' ? 'Studio' : 'Chambre'}</span>
+                            <span>{getUnitTypeLabel(u.type, u.subTypeLabel)}</span>
                           </button>
                           <div className="text-xs text-slate-500 font-medium mt-1">
-                            {u.floor === 0 ? 'RDC' : `Étage ${u.floor}`} •{' '}
-                            {u.side === 'LEFT_ODD' ? 'Gauche (Impair)' : 'Droite (Pair)'}
+                            {u.floor === 0 ? 'RDC' : `Étage ${u.floor}`} • Eau :{' '}
+                            {formatFCFA(balances.waterFlatFee)}
                           </div>
                         </td>
 
@@ -311,6 +330,27 @@ export const TenantsAndPaymentsView: React.FC<TenantsAndPaymentsViewProps> = ({
                                 <UserCheck className="w-3.5 h-3.5" />
                                 <span>Fiche</span>
                               </button>
+
+                              <button
+                                type="button"
+                                onClick={() => onSelectUnit(u, 'DOCUMENTS')}
+                                className="px-3 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#1E3A8A] border border-blue-200 font-bold text-xs flex items-center gap-1 cursor-pointer"
+                              >
+                                <FileText className="w-3.5 h-3.5" />
+                                <span>CNI & Bail</span>
+                              </button>
+
+                              {isPreventiveThreeMonthsAlert(u) && (
+                                <a
+                                  href={buildPreventiveThreeMonthsWhatsAppUrl(u, settings)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-2 rounded-xl bg-[#F59E0B] hover:bg-amber-600 text-white font-bold text-xs flex items-center gap-1"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5" />
+                                  <span>Rappel {getRemainingMonthsCovered(u)}m</span>
+                                </a>
+                              )}
 
                               <a
                                 href={buildTenantWhatsAppUrl(u, settings)}

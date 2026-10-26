@@ -4,52 +4,140 @@ import {
   AlertCircle,
   ArrowUpRight,
   Building,
+  CalendarClock,
+  Check,
   Clock,
   CreditCard,
   DoorOpen,
+  FileText,
   Footprints,
   Home,
   LayoutGrid,
   MessageCircle,
   Phone,
+  PlusCircle,
   RefreshCw,
   Search,
   Sparkles,
   UserPlus,
   Wallet,
+  X,
 } from 'lucide-react';
+import {
+  DEFAULT_APARTMENT_PRICE,
+  DEFAULT_ROOM_PRICE,
+  DEFAULT_SHOP_PRICE,
+  DEFAULT_STUDIO_PRICE,
+  DEFAULT_WAREHOUSE_PRICE,
+  DEFAULT_WATER_FLAT_FEE,
+  REDUCED_WATER_FLAT_FEE,
+} from '@config/constants';
 import { useApp } from '../context/AppContext';
-import { RentalUnit, UnitStatus } from '../types';
+import { RentalUnit, UnitStatus, UnitType } from '../types';
 import {
   buildGuarantorWhatsAppUrl,
+  buildPreventiveThreeMonthsWhatsAppUrl,
   buildTenantWhatsAppUrl,
+  calculateUnitSeparatedBalances,
   formatDateFR,
   formatFCFA,
   getDaysUntilDue,
+  getRemainingMonthsCovered,
   getStatusConfig,
+  getUnitTypeLabel,
+  isPreventiveThreeMonthsAlert,
 } from '../utils/formatters';
 import { AlertCenterBanner } from './AlertCenterBanner';
 
 interface BuildingFloorMapProps {
-  onSelectUnit: (unit: RentalUnit, initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES') => void;
+  onSelectUnit: (
+    unit: RentalUnit,
+    initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES' | 'DOCUMENTS'
+  ) => void;
 }
 
 type FloorFilter = 'ALL' | 0 | 1 | 2 | 3;
 type ViewMode = 'CORRIDOR' | 'GRID';
 
 export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit }) => {
-  const { units, settings, activeBuilding, refreshOverdueBalances } = useApp();
+  const { units, settings, activeBuilding, refreshOverdueBalances, addCustomUnit } = useApp();
   const [selectedFloor, setSelectedFloor] = useState<FloorFilter>('ALL');
   const [statusFilter, setStatusFilter] = useState<UnitStatus | 'ALL'>('ALL');
   const [viewMode, setViewMode] = useState<ViewMode>('CORRIDOR');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
 
+  // Modale "+ Ajouter un bien personnalisé" (Appartement, Boutique, Magasin, Studio, Chambre)
+  const [showAddUnitModal, setShowAddUnitModal] = useState(false);
+  const [customType, setCustomType] = useState<UnitType>('APARTMENT');
+  const [customCode, setCustomCode] = useState('APT01');
+  const [customSubType, setCustomSubType] = useState('Appartement T3');
+  const [customLocation, setCustomLocation] = useState('');
+  const [customFloor, setCustomFloor] = useState(0);
+  const [customRent, setCustomRent] = useState(DEFAULT_APARTMENT_PRICE);
+  const [customWaterFee, setCustomWaterFee] = useState(DEFAULT_WATER_FLAT_FEE);
+  const [customElecMode, setCustomElecMode] = useState<'METER' | 'FLAT'>('METER');
+
+  const handleUnitTypeChange = (t: UnitType) => {
+    setCustomType(t);
+    if (t === 'ROOM') {
+      setCustomCode(`CH${units.length + 1}`);
+      setCustomSubType('Chambre Moderne');
+      setCustomRent(DEFAULT_ROOM_PRICE);
+      setCustomWaterFee(DEFAULT_WATER_FLAT_FEE);
+    } else if (t === 'STUDIO') {
+      setCustomCode(`ST${units.length + 1}`);
+      setCustomSubType('Studio Moderne');
+      setCustomRent(DEFAULT_STUDIO_PRICE);
+      setCustomWaterFee(DEFAULT_WATER_FLAT_FEE);
+    } else if (t === 'APARTMENT') {
+      setCustomCode('APT01');
+      setCustomSubType('Appartement T3');
+      setCustomRent(DEFAULT_APARTMENT_PRICE);
+      setCustomWaterFee(DEFAULT_WATER_FLAT_FEE);
+    } else if (t === 'SHOP') {
+      setCustomCode('BTQ01');
+      setCustomSubType('Boutique / Local Commercial');
+      setCustomLocation('Façade Rue (RDC)');
+      setCustomRent(DEFAULT_SHOP_PRICE);
+      setCustomWaterFee(REDUCED_WATER_FLAT_FEE);
+    } else if (t === 'WAREHOUSE') {
+      setCustomCode('MAG01');
+      setCustomSubType('Magasin / Entrepôt');
+      setCustomLocation('Zone Commerciale RDC');
+      setCustomRent(DEFAULT_WAREHOUSE_PRICE);
+      setCustomWaterFee(0);
+    }
+  };
+
+  const handleCreateCustomUnit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customCode.trim()) return;
+    const created = addCustomUnit({
+      code: customCode.trim(),
+      type: customType,
+      subTypeLabel: customSubType.trim(),
+      locationLabel: customLocation.trim(),
+      floor: Number(customFloor) || 0,
+      monthlyRent: Number(customRent) || 32000,
+      waterFlatFee: Number(customWaterFee) || 0,
+      electricityMode: customElecMode,
+    });
+    setShowAddUnitModal(false);
+    setRefreshMsg(
+      `Nouveau bien "${created.code} (${getUnitTypeLabel(created.type, created.subTypeLabel)})" ajouté avec succès !`
+    );
+    setTimeout(() => setRefreshMsg(null), 4000);
+  };
+
   // Statistiques globales en temps réel
   const stats = useMemo(() => {
     const totalUnits = units.length;
     const roomsCount = units.filter((u) => u.type === 'ROOM').length;
     const studiosCount = units.filter((u) => u.type === 'STUDIO').length;
+    const otherTypesCount = units.filter(
+      (u) => u.type !== 'ROOM' && u.type !== 'STUDIO'
+    ).length;
 
     const paidUnits = units.filter((u) => u.status === 'PAID');
     const partialUnits = units.filter((u) => u.status === 'PARTIAL');
@@ -64,11 +152,10 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
       .filter((u) => u.status !== 'VACANT')
       .reduce((acc, u) => acc + u.monthlyRent, 0);
 
-    // Somme des impayés et restes à payer en cours
+    // Somme des impayés et restes à payer en cours (Solde Global Net : Loyer + Eau + Élec)
     const totalArrears = units.reduce((acc, u) => {
-      if (u.status === 'LATE') return acc + (u.tenant?.balanceDue || u.monthlyRent);
-      if (u.status === 'PARTIAL') return acc + (u.tenant?.balanceDue || 0);
-      return acc;
+      if (u.status === 'VACANT') return acc;
+      return acc + calculateUnitSeparatedBalances(u).globalNetDue;
     }, 0);
 
     // Somme des crédits d'avance positifs reportés sur les comptes courants locataires
@@ -77,8 +164,13 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
       0
     );
 
+    const rentArrearsOnly = units.reduce((acc, u) => {
+      if (u.status === 'VACANT') return acc;
+      return acc + calculateUnitSeparatedBalances(u).rentBalanceDue;
+    }, 0);
+
     // Loyer mensuel effectivement encaissé sur le mois courant
-    const collectedMonthlyRent = Math.max(0, occupiedMonthlyRent - totalArrears);
+    const collectedMonthlyRent = Math.max(0, occupiedMonthlyRent - rentArrearsOnly);
 
     // Manque à gagner lié aux logements vacants
     const vacancyLoss = vacantUnits.reduce((acc, u) => acc + u.monthlyRent, 0);
@@ -87,6 +179,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
       totalUnits,
       roomsCount,
       studiosCount,
+      otherTypesCount,
       paidCount: paidUnits.length,
       partialCount: partialUnits.length,
       lateCount: lateUnits.length,
@@ -109,9 +202,10 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchCode = u.code.toLowerCase().includes(q);
+        const matchSub = u.subTypeLabel?.toLowerCase().includes(q);
         const matchTenant = u.tenant?.fullName.toLowerCase().includes(q);
         const matchGuarantor = u.tenant?.guarantor.fullName.toLowerCase().includes(q);
-        return matchCode || matchTenant || matchGuarantor;
+        return matchCode || matchSub || matchTenant || matchGuarantor;
       }
       return true;
     });
@@ -166,7 +260,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
 
   return (
     <div className="space-y-6">
-      {/* Bannière Centre d'Alertes & Rappel par E-mail */}
+      {/* Bannière Centre d'Alertes (inclut la Bannière d'Alerte Préventive à 3 Mois) */}
       <AlertCenterBanner onSelectUnit={(u) => onSelectUnit(u, 'INFO')} />
 
       {/* Cartes KPIs & Jauges Financières Animées */}
@@ -189,10 +283,11 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
             </div>
             <div className="text-2xl sm:text-3xl font-extrabold text-[#0F172A]">
               {stats.occupiedCount} / {stats.totalUnits}{' '}
-              <span className="text-base font-bold text-slate-500">Portes</span>
+              <span className="text-base font-bold text-slate-500">Biens</span>
             </div>
             <p className="text-xs font-semibold text-slate-600 mt-1">
-              {stats.roomsCount} Chambres (CH) • {stats.studiosCount} Studios (ST)
+              {stats.roomsCount} Chambres • {stats.studiosCount} Studios
+              {stats.otherTypesCount > 0 ? ` • ${stats.otherTypesCount} Autres biens` : ''}
             </p>
           </div>
           <div className="mt-4">
@@ -260,7 +355,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
           </div>
         </motion.div>
 
-        {/* Jauge 3 : Restes à payer & Impayés (Orange / Rouge) */}
+        {/* Jauge 3 : Solde Global Net à Recouvrer (Loyer + Forfait Eau + Reste Élec) */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -270,7 +365,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-extrabold uppercase tracking-wider text-amber-800">
-                Restes à Payer & Retards
+                Solde Global Net à Recouvrer
               </span>
               <div className="flex items-center gap-1">
                 <span className="w-2.5 h-2.5 rounded-full bg-[#F59E0B]" />
@@ -281,7 +376,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
               {formatFCFA(stats.totalArrears)}
             </div>
             <p className="text-xs font-semibold text-slate-600 mt-1">
-              {stats.partialCount} arrangement(s) partiel(s) • {stats.lateCount} impayé(s)
+              Loyers + Forfaits Eau (2000/1500) + Reste Élec ENEO
             </p>
           </div>
           <div className="mt-4 flex items-center gap-2">
@@ -320,7 +415,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
               {formatFCFA(stats.vacancyLoss)}
             </div>
             <p className="text-xs font-semibold text-slate-500 mt-1">
-              {stats.vacantCount} logement(s) inoccupé(s) ce mois-ci
+              {stats.vacantCount} bien(s) inoccupé(s) ce mois-ci
             </p>
           </div>
           <div className="mt-4">
@@ -340,7 +435,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
         </motion.div>
       </div>
 
-      {/* Barre de Contrôle du Plan : Étages + Filtres Couleurs + Mode Couloir/Grille */}
+      {/* Barre de Contrôle du Plan : Étages + Ajout de Bien Multi-Types + Mode Couloir/Grille */}
       <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-sm space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           {/* Onglets d'étages */}
@@ -394,8 +489,17 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
             })}
           </div>
 
-          {/* Mode Vue Couloir (Depuis les Escaliers) vs Grille + Actualisation Compte Courant */}
+          {/* Boutons : + Ajouter une Unité (Appartement, Boutique, Magasin...) + Vue Couloir/Grille */}
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAddUnitModal(true)}
+              className="px-3.5 py-2.5 rounded-xl bg-[#2563EB] hover:bg-[#1E3A8A] text-white text-xs sm:text-sm font-extrabold flex items-center gap-2 shadow-xs cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>+ Ajouter Appartement / Boutique / Magasin</span>
+            </button>
+
             <button
               type="button"
               onClick={handleRefreshCycle}
@@ -403,26 +507,26 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
               className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-blue-50 text-[#1E3A8A] border border-slate-200 text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer"
             >
               <RefreshCw className="w-4 h-4 text-[#2563EB]" />
-              <span>Actualiser Soldes Glissants</span>
+              <span>Actualiser Soldes</span>
             </button>
 
             <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200">
               <button
                 type="button"
                 onClick={() => setViewMode('CORRIDOR')}
-                className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all cursor-pointer ${
+                className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
                   viewMode === 'CORRIDOR'
                     ? 'bg-[#2563EB] text-white shadow-sm'
                     : 'text-slate-700 hover:text-[#0F172A]'
                 }`}
               >
                 <Footprints className="w-4 h-4" />
-                <span>Vue Couloir (Depuis les Escaliers)</span>
+                <span>Vue Couloir</span>
               </button>
               <button
                 type="button"
                 onClick={() => setViewMode('GRID')}
-                className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all cursor-pointer ${
+                className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
                   viewMode === 'GRID'
                     ? 'bg-[#2563EB] text-white shadow-sm'
                     : 'text-slate-700 hover:text-[#0F172A]'
@@ -443,7 +547,6 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
 
         {/* Deuxième ligne : Recherche + Légende Interactive des Statuts Universels */}
         <div className="pt-3 border-t border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
-          {/* Légende / Filtres Couleurs Universels */}
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -562,7 +665,11 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
               .filter((u) => u.side === 'RIGHT_EVEN')
               .sort((a, b) => a.corridorPosition - b.corridorPosition);
 
-            const maxPositions = floorNum === 0 ? [1, 2, 3, 4] : [1, 2, 3, 4, 5];
+            const maxPosOnFloor = Math.max(
+              floorNum === 0 ? 4 : 5,
+              ...floorUnits.map((u) => u.corridorPosition)
+            );
+            const maxPositions = Array.from({ length: maxPosOnFloor }, (_, i) => i + 1);
 
             return (
               <section
@@ -599,7 +706,6 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                 {/* Contenu de l'étage : VUE COULOIR ARCHITECTURALE ou VUE GRILLE */}
                 {viewMode === 'CORRIDOR' && statusFilter === 'ALL' && !searchQuery.trim() ? (
                   <div className="p-4 sm:p-6 bg-[#F8FAFC]">
-                    {/* En-tête des deux ailes du couloir */}
                     <div className="hidden lg:grid lg:grid-cols-11 gap-4 mb-4">
                       <div className="col-span-5 px-4 py-2.5 rounded-xl bg-[#1E3A8A]/10 border border-[#1E3A8A]/20 flex items-center justify-between">
                         <span className="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-[#1E3A8A]">
@@ -632,11 +738,12 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                       </div>
                     </div>
 
-                    {/* Rangées du couloir position par position depuis l'entrée / escaliers jusqu'au fond */}
                     <div className="space-y-4">
                       {maxPositions.map((pos) => {
                         const leftUnit = leftOddUnits.find((u) => u.corridorPosition === pos);
                         const rightUnit = rightEvenUnits.find((u) => u.corridorPosition === pos);
+                        if (!leftUnit && !rightUnit && !(floorNum > 0 && pos === 4)) return null;
+
                         const isEntranceStairsRow = pos === 1;
                         const isBackOfCorridorRow =
                           (floorNum === 0 && pos === 4) || (floorNum > 0 && pos === 5);
@@ -644,7 +751,6 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
 
                         return (
                           <div key={pos} className="space-y-2">
-                            {/* Repère Visuel Début du Couloir / Arrivée des Escaliers */}
                             {isEntranceStairsRow && (
                               <div className="pb-1 flex items-center gap-3">
                                 <div className="h-px bg-blue-300 flex-grow" />
@@ -657,7 +763,6 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                               </div>
                             )}
 
-                            {/* Repère Visuel Passage des Studios aux Chambres */}
                             {floorNum > 0 && pos === 2 && (
                               <div className="pt-2 pb-1 flex items-center gap-3">
                                 <div className="h-px bg-slate-300 flex-grow" />
@@ -669,7 +774,6 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                               </div>
                             )}
 
-                            {/* Repère Visuel Tout au Fond du Couloir (CHX5 & CHX8) */}
                             {isBackOfCorridorRow && (
                               <div className="pt-2 pb-1 flex items-center gap-3">
                                 <div className="h-px bg-slate-300 flex-grow" />
@@ -683,7 +787,6 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                             )}
 
                             <div className="grid grid-cols-1 lg:grid-cols-11 gap-4 items-stretch">
-                              {/* Porte Côté Gauche (Impair) */}
                               <div className="lg:col-span-5 flex">
                                 {leftUnit ? (
                                   <UnitDoorCard
@@ -707,7 +810,6 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                                 )}
                               </div>
 
-                              {/* Couloir Central */}
                               <div className="hidden lg:flex lg:col-span-1 flex-col items-center justify-center relative">
                                 <div className="w-full h-full rounded-xl bg-slate-200/70 border border-slate-300/60 flex flex-col items-center justify-center py-2">
                                   <Footprints className="w-4 h-4 text-slate-400 mb-1" />
@@ -721,7 +823,6 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                                 </div>
                               </div>
 
-                              {/* Porte Côté Droit (Pair) */}
                               <div className="lg:col-span-5 flex">
                                 {rightUnit ? (
                                   <UnitDoorCard
@@ -764,13 +865,218 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
           })}
         </motion.div>
       </AnimatePresence>
+
+      {/* MODALE : Ajouter un bien personnalisé sans limite (Appartement, Boutique, Magasin, Studio, Chambre) */}
+      <AnimatePresence>
+        {showAddUnitModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4 overflow-y-auto">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-xl w-full overflow-hidden my-6"
+            >
+              <div className="bg-[#0F172A] text-white px-6 py-5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#2563EB] flex items-center justify-center">
+                    <PlusCircle className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-extrabold">
+                      Ajouter un Nouveau Bien dans « {activeBuilding.name} »
+                    </h3>
+                    <p className="text-xs text-slate-300">
+                      Extension Multi-Biens sans limite : Appartement, Boutique, Magasin, Studio, Chambre
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAddUnitModal(false)}
+                  className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateCustomUnit} className="p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">
+                    1. Choisissez la catégorie du bien *
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {(
+                      [
+                        { id: 'APARTMENT', label: 'Appartement (T2/T3)' },
+                        { id: 'SHOP', label: 'Boutique / Commerce' },
+                        { id: 'WAREHOUSE', label: 'Magasin / Entrepôt' },
+                        { id: 'STUDIO', label: 'Studio' },
+                        { id: 'ROOM', label: 'Chambre' },
+                      ] as { id: UnitType; label: string }[]
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => handleUnitTypeChange(opt.id)}
+                        className={`px-3 py-2.5 rounded-xl font-extrabold text-xs border transition-all cursor-pointer ${
+                          customType === opt.id
+                            ? 'bg-[#2563EB] text-white border-[#2563EB] shadow-sm'
+                            : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-1.5">
+                      Code / Numéro du bien *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: APT01, BTQ01, MAG01"
+                      value={customCode}
+                      onChange={(e) => setCustomCode(e.target.value)}
+                      className="w-full px-4 py-3 rounded-xl border border-slate-300 text-base font-extrabold text-[#0F172A]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-1.5">
+                      Appellation précise (Optionnel)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Appartement T3, Boutique Façade"
+                      value={customSubType}
+                      onChange={(e) => setCustomSubType(e.target.value)}
+                      className="w-full px-4 py-3 rounded-xl border border-slate-300 text-base font-semibold text-[#0F172A]"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-1.5">
+                      Étage de rattachement
+                    </label>
+                    <select
+                      value={customFloor}
+                      onChange={(e) => setCustomFloor(Number(e.target.value))}
+                      className="w-full px-4 py-3 rounded-xl border border-slate-300 text-base font-bold text-[#0F172A] bg-white"
+                    >
+                      <option value={0}>Rez-de-chaussée (Étage 0)</option>
+                      <option value={1}>1er Étage</option>
+                      <option value={2}>2ème Étage</option>
+                      <option value={3}>3ème Étage</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-1.5">
+                      Emplacement spécifique (Optionnel)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Annexe Rue Principale"
+                      value={customLocation}
+                      onChange={(e) => setCustomLocation(e.target.value)}
+                      className="w-full px-4 py-3 rounded-xl border border-slate-300 text-base text-[#0F172A]"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-extrabold uppercase text-slate-700 mb-1">
+                      Loyer de Base (FCFA/mois)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1000}
+                      value={customRent}
+                      onChange={(e) => setCustomRent(Number(e.target.value))}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-base font-extrabold text-[#2563EB]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-extrabold uppercase text-slate-700 mb-1">
+                      Forfait Eau (FCFA/mois)
+                    </label>
+                    <div className="flex gap-1 mb-1">
+                      {[2000, 1500, 0].map((fee) => (
+                        <button
+                          key={fee}
+                          type="button"
+                          onClick={() => setCustomWaterFee(fee)}
+                          className={`flex-1 py-1 rounded-lg text-xs font-extrabold border cursor-pointer ${
+                            customWaterFee === fee
+                              ? 'bg-[#1E3A8A] text-white border-[#1E3A8A]'
+                              : 'bg-slate-100 text-slate-700 border-slate-300'
+                          }`}
+                        >
+                          {fee === 0 ? 'Exonéré' : `${fee}`}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      step={500}
+                      value={customWaterFee}
+                      onChange={(e) => setCustomWaterFee(Number(e.target.value))}
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 text-sm font-bold text-[#0F172A]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-extrabold uppercase text-slate-700 mb-1">
+                      Mode Électricité ENEO
+                    </label>
+                    <select
+                      value={customElecMode}
+                      onChange={(e) => setCustomElecMode(e.target.value as 'METER' | 'FLAT')}
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-300 text-sm font-bold text-[#0F172A] bg-white"
+                    >
+                      <option value="METER">Sous-compteur + Avances</option>
+                      <option value="FLAT">Forfait mensuel ENEO</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddUnitModal(false)}
+                    className="px-4 py-3 rounded-xl border border-slate-300 text-slate-700 font-bold text-sm hover:bg-slate-100 cursor-pointer"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-6 py-3 rounded-xl bg-[#2563EB] hover:bg-[#1E3A8A] text-white font-extrabold text-sm flex items-center gap-2 shadow-md cursor-pointer"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>Ajouter ce Bien au Plan</span>
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
 
 interface UnitDoorCardProps {
   unit: RentalUnit;
-  onSelectUnit: (unit: RentalUnit, initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES') => void;
+  onSelectUnit: (
+    unit: RentalUnit,
+    initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES' | 'DOCUMENTS'
+  ) => void;
   settings: ReturnType<typeof useApp>['settings'];
 }
 
@@ -780,11 +1086,16 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
   const isDueSoon =
     unit.status === 'PAID' && daysUntilDue >= 0 && daysUntilDue <= settings.alertDaysBeforeDue;
 
+  // Alerte préventive à 3 mois (<= 3 mois restants)
+  const isPreventiveAlert = isPreventiveThreeMonthsAlert(unit);
+  const remainingMonths = getRemainingMonthsCovered(unit);
+
+  // Soldes séparés (Loyer, Forfait Eau, Électricité ENEO et Solde Global Net)
+  const balances = calculateUnitSeparatedBalances(unit);
+
   const depositRemaining = unit.tenant
     ? Math.max(0, unit.tenant.depositRequired - unit.tenant.depositPaid)
     : 0;
-
-  const creditCarryOver = unit.tenant?.creditBalance || 0;
 
   return (
     <motion.div
@@ -793,7 +1104,7 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
       className={`w-full bg-white rounded-2xl border-2 ${statusCfg.borderCard} shadow-sm hover:shadow-md transition-all p-4 sm:p-5 flex flex-col justify-between`}
     >
       <div>
-        {/* Ligne 1 : Code Porte (CHxx / STxx) + Type + Statut Couleur */}
+        {/* Ligne 1 : Code Porte + Type + Statut Couleur */}
         <div className="flex items-start justify-between gap-2 mb-3">
           <div className="flex items-center gap-2.5">
             <button
@@ -802,24 +1113,31 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
               className={`px-3.5 py-2 rounded-xl font-extrabold text-base sm:text-lg tracking-tight flex items-center gap-1.5 cursor-pointer shadow-xs ${
                 unit.type === 'STUDIO'
                   ? 'bg-[#1E3A8A] text-white'
-                  : 'bg-[#0F172A] text-white'
+                  : unit.type === 'ROOM'
+                  ? 'bg-[#0F172A] text-white'
+                  : 'bg-[#2563EB] text-white'
               }`}
             >
               <Home className="w-4 h-4 text-blue-300" />
               <span>{unit.code}</span>
             </button>
             <div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
-                  {unit.type === 'STUDIO' ? 'Studio (Début Couloir)' : 'Chambre'}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                  {unit.type === 'STUDIO'
+                    ? 'Studio (Début Couloir)'
+                    : getUnitTypeLabel(unit.type, unit.subTypeLabel)}
                 </span>
                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">
-                  {unit.side === 'LEFT_ODD' ? 'Gauche (Impair)' : 'Droite (Pair)'}
+                  {unit.locationLabel ||
+                    (unit.side === 'LEFT_ODD' ? 'Gauche (Impair)' : 'Droite (Pair)')}
                 </span>
               </div>
               <div className="text-sm font-extrabold text-[#2563EB] mt-0.5">
                 {formatFCFA(unit.monthlyRent)}{' '}
-                <span className="text-xs font-medium text-slate-500">/ mois</span>
+                <span className="text-xs font-medium text-slate-500">
+                  / mois • Eau : {formatFCFA(balances.waterFlatFee)}
+                </span>
               </div>
             </div>
           </div>
@@ -831,6 +1149,28 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
             <span>{statusCfg.label}</span>
           </span>
         </div>
+
+        {/* ALERTE PRÉVENTIVE À 3 MOIS (<= 3 MOIS RESTANTS) SUR LA CARTE DU LOGEMENT */}
+        {isPreventiveAlert && unit.tenant && (
+          <div className="mb-2.5 p-2.5 rounded-xl bg-amber-50 border-2 border-[#F59E0B] flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <CalendarClock className="w-4 h-4 text-[#D97706] shrink-0" />
+              <div className="text-xs font-extrabold text-[#92400E] leading-tight">
+                Échéance proche : &lt;= 3 mois restants ({remainingMonths} mois)
+              </div>
+            </div>
+            <a
+              href={buildPreventiveThreeMonthsWhatsAppUrl(unit, settings)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Envoyer l'alerte préventive à 3 mois sur WhatsApp"
+              className="px-2.5 py-1 rounded-lg bg-[#F59E0B] hover:bg-amber-600 text-white text-[11px] font-extrabold flex items-center gap-1 shrink-0"
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              <span>Rappel 3 Mois</span>
+            </a>
+          </div>
+        )}
 
         {/* Contenu : Locataire ou Logement Vacant */}
         {unit.tenant ? (
@@ -877,33 +1217,99 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
               )}
             </div>
 
-            {/* Crédit d'avance positif reporté (Compte courant glissant) */}
-            {creditCarryOver > 0 && (
-              <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-300 text-xs text-[#065F46] font-extrabold flex items-center justify-between">
+            {/* SÉPARATION VISUELLE : LOYER | FORFAIT EAU | ÉLECTRICITÉ ENEO | SOLDE GLOBAL NET */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px]">
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
+                <div className="font-bold text-slate-500 uppercase">Loyer</div>
+                <div
+                  className={`font-extrabold ${
+                    balances.rentBalanceDue > 0 ? 'text-[#EF4444]' : 'text-[#065F46]'
+                  }`}
+                >
+                  {balances.rentBalanceDue > 0
+                    ? `Dû ${formatFCFA(balances.rentBalanceDue, false)}`
+                    : balances.rentCreditCarry > 0
+                    ? `+${formatFCFA(balances.rentCreditCarry, false)}`
+                    : 'À jour'}
+                </div>
+              </div>
+
+              <div
+                onClick={() => onSelectUnit(unit, 'UTILITIES')}
+                className="p-2 rounded-lg bg-blue-50/60 border border-blue-200 cursor-pointer hover:bg-blue-100/60"
+              >
+                <div className="font-bold text-[#1E3A8A] uppercase">
+                  Eau ({balances.waterFlatFee})
+                </div>
+                <div
+                  className={`font-extrabold ${
+                    balances.waterRemainingDue > 0 ? 'text-[#B45309]' : 'text-[#065F46]'
+                  }`}
+                >
+                  {balances.waterRemainingDue > 0
+                    ? `Dû ${formatFCFA(balances.waterRemainingDue, false)}`
+                    : 'Payé'}
+                </div>
+              </div>
+
+              <div
+                onClick={() => onSelectUnit(unit, 'UTILITIES')}
+                className="p-2 rounded-lg bg-amber-50/60 border border-amber-200 cursor-pointer hover:bg-amber-100/60"
+              >
+                <div className="font-bold text-amber-900 uppercase">Élec ENEO</div>
+                <div
+                  className={`font-extrabold ${
+                    balances.electricityRemainingDue > 0 ? 'text-[#B45309]' : 'text-[#065F46]'
+                  }`}
+                >
+                  {balances.electricityRemainingDue > 0
+                    ? `Reste ${formatFCFA(balances.electricityRemainingDue, false)}`
+                    : 'Soldé'}
+                </div>
+              </div>
+
+              <div className="p-2 rounded-lg bg-[#0F172A] text-white">
+                <div className="font-bold text-slate-300 uppercase">Solde Net</div>
+                <div
+                  className={`font-extrabold ${
+                    balances.globalNetDue > 0 ? 'text-amber-300' : 'text-emerald-300'
+                  }`}
+                >
+                  {balances.globalNetDue > 0
+                    ? `${formatFCFA(balances.globalNetDue, false)} F`
+                    : balances.globalNetCredit > 0
+                    ? `+${formatFCFA(balances.globalNetCredit, false)} F`
+                    : '0 FCFA'}
+                </div>
+              </div>
+            </div>
+
+            {/* Crédit d'avance positif reporté */}
+            {balances.rentCreditCarry > 0 && (
+              <div className="p-2 rounded-xl bg-emerald-50 border border-emerald-300 text-xs text-[#065F46] font-extrabold flex items-center justify-between">
                 <span className="flex items-center gap-1.5">
                   <Wallet className="w-4 h-4 text-[#10B981]" />
-                  <span>Crédit d’avance reporté :</span>
+                  <span>Crédit d’avance Loyer reporté :</span>
                 </span>
                 <span className="px-2 py-0.5 rounded-md bg-[#10B981] text-white">
-                  +{formatFCFA(creditCarryOver)}
+                  +{formatFCFA(balances.rentCreditCarry)}
                 </span>
               </div>
             )}
 
-            {/* Indicateurs Financiers Spécifiques (Reste à payer, Caution incomplète, Échéance proche) */}
             {unit.status === 'PARTIAL' && (
-              <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-950 flex items-center justify-between">
+              <div className="p-2 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-950 flex items-center justify-between">
                 <span className="font-bold">
-                  Payé : {formatFCFA(unit.tenant.amountPaidCurrentPeriod)}
+                  Versé : {formatFCFA(unit.tenant.amountPaidCurrentPeriod)}
                 </span>
                 <span className="font-extrabold text-[#B45309]">
-                  Reste à payer : {formatFCFA(unit.tenant.balanceDue)}
+                  Reste Loyer : {formatFCFA(unit.tenant.balanceDue)}
                 </span>
               </div>
             )}
 
             {unit.status === 'LATE' && (
-              <div className="p-2.5 rounded-xl bg-red-50 border border-red-300 text-xs text-red-950 flex items-center justify-between">
+              <div className="p-2 rounded-xl bg-red-50 border border-red-300 text-xs text-red-950 flex items-center justify-between">
                 <span className="font-bold flex items-center gap-1 text-[#EF4444]">
                   <AlertCircle className="w-4 h-4" />
                   Loyer en retard
@@ -917,7 +1323,7 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
             {isDueSoon && (
               <div className="p-2 rounded-xl bg-blue-50 border border-blue-200 text-xs text-[#1E3A8A] font-bold flex items-center gap-1.5">
                 <Clock className="w-4 h-4 text-[#2563EB] shrink-0" />
-                <span>Échéance proche : arrive à terme dans {daysUntilDue} jour(s)</span>
+                <span>Échéance imminente : arrive à terme dans {daysUntilDue} jour(s)</span>
               </div>
             )}
 
@@ -928,7 +1334,7 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
             )}
 
             {unit.tenant.arrangementNotes && (
-              <p className="text-xs text-slate-600 italic bg-slate-50 px-3 py-2 rounded-lg border-l-4 border-[#2563EB] line-clamp-2">
+              <p className="text-xs text-slate-600 italic bg-slate-50 px-3 py-1.5 rounded-lg border-l-4 border-[#2563EB] line-clamp-2">
                 « {unit.tenant.arrangementNotes} »
               </p>
             )}
@@ -939,7 +1345,8 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
             <DoorOpen className="w-7 h-7 text-slate-400 mx-auto mb-1.5" />
             <div className="text-sm font-extrabold text-slate-700">Logement Libre / Vacant</div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Prêt à accueillir un nouveau locataire ({formatFCFA(unit.monthlyRent)}/mois)
+              Prêt à accueillir un locataire ({formatFCFA(unit.monthlyRent)}/mois • Forfait Eau{' '}
+              {formatFCFA(balances.waterFlatFee)})
             </p>
           </div>
         )}
@@ -949,20 +1356,30 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
       <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
         {unit.tenant ? (
           <>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => onSelectUnit(unit, 'INFO')}
-                className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#0F172A] font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                className="px-2.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#0F172A] font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
               >
-                <span>Dossier & Garant</span>
+                <span>Dossier</span>
                 <ArrowUpRight className="w-3.5 h-3.5" />
               </button>
 
               <button
                 type="button"
+                onClick={() => onSelectUnit(unit, 'DOCUMENTS')}
+                title="CNI, Contrat de Bail & Règlement Intérieur"
+                className="px-2.5 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#1E3A8A] border border-blue-200 font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>CNI & Bail</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => onSelectUnit(unit, 'PAYMENT')}
-                className="px-3 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1E3A8A] text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                className="px-3 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1E3A8A] text-white font-bold text-xs flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
               >
                 <CreditCard className="w-3.5 h-3.5" />
                 <span>Encaisser</span>

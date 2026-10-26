@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertTriangle,
   BellRing,
+  CalendarClock,
   CheckCircle2,
   Clock,
   Copy,
@@ -15,10 +16,14 @@ import { useApp } from '../context/AppContext';
 import { RentalUnit } from '../types';
 import {
   buildGuarantorWhatsAppUrl,
+  buildPreventiveThreeMonthsWhatsAppUrl,
   buildTenantWhatsAppUrl,
+  calculateUnitSeparatedBalances,
   formatDateFR,
   formatFCFA,
   getDaysUntilDue,
+  getRemainingMonthsCovered,
+  isPreventiveThreeMonthsAlert,
 } from '../utils/formatters';
 
 interface AlertCenterBannerProps {
@@ -34,6 +39,13 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
 
   const lateUnits = useMemo(() => units.filter((u) => u.status === 'LATE'), [units]);
   const partialUnits = useMemo(() => units.filter((u) => u.status === 'PARTIAL'), [units]);
+
+  // Système d'Alerte Préventive à 3 Mois (<= 3 mois de loyer payé d'avance restants)
+  const preventiveThreeMonthsUnits = useMemo(
+    () => units.filter((u) => isPreventiveThreeMonthsAlert(u)),
+    [units]
+  );
+
   const dueSoonUnits = useMemo(
     () =>
       units.filter((u) => {
@@ -45,15 +57,14 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
   );
 
   const totalLateAndPartialAmount = useMemo(() => {
-    const lateSum = lateUnits.reduce(
-      (acc, u) => acc + (u.tenant?.balanceDue || u.monthlyRent),
-      0
-    );
-    const partialSum = partialUnits.reduce((acc, u) => acc + (u.tenant?.balanceDue || 0), 0);
-    return lateSum + partialSum;
-  }, [lateUnits, partialUnits]);
+    return units.reduce((acc, u) => {
+      if (u.status === 'VACANT') return acc;
+      const balances = calculateUnitSeparatedBalances(u);
+      return acc + balances.globalNetDue;
+    }, 0);
+  }, [units]);
 
-  const emailSubject = `[Conrad Solution] Récapitulatif Loyers & Alertes — ${activeBuilding.name} (${formatDateFR('2026-10-26')})`;
+  const emailSubject = `[Conrad Solutions] Récapitulatif Loyers & Alertes 3 Mois — ${activeBuilding.name} (${formatDateFR('2026-10-26')})`;
 
   const emailBodyText = useMemo(() => {
     const lines: string[] = [
@@ -61,13 +72,13 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
       ``,
       `Voici le récapitulatif automatique des alertes locatives pour votre immeuble "${activeBuilding.name}" :`,
       `====================================================================`,
-      `• MONTANT TOTAL À RECOUVRER (Retards + Soldes partiels) : ${formatFCFA(totalLateAndPartialAmount)}`,
+      `• SOLDE GLOBAL NET À RECOUVRER (Loyers + Forfaits Eau + Reste Élec) : ${formatFCFA(totalLateAndPartialAmount)}`,
       `• Locataires en retard (Impayés) : ${lateUnits.length}`,
       `• Locataires en arrangement (Paiement partiel) : ${partialUnits.length}`,
-      `• Échéances proches (moins de ${settings.alertDaysBeforeDue} jours) : ${dueSoonUnits.length}`,
+      `• Alertes préventives à 3 mois (<= 3 mois restants) : ${preventiveThreeMonthsUnits.length}`,
       `====================================================================`,
       ``,
-      `1. LOCATAIRES EN RETARD DE PAIement (${lateUnits.length}) :`,
+      `1. LOCATAIRES EN RETARD DE PAIEMENT (${lateUnits.length}) :`,
     ];
 
     if (lateUnits.length === 0) {
@@ -75,8 +86,9 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
     } else {
       lateUnits.forEach((u) => {
         const t = u.tenant!;
+        const bal = calculateUnitSeparatedBalances(u);
         lines.push(
-          `   - Porte ${u.code} : ${t.fullName} (${t.phone}) | Dû : ${formatFCFA(t.balanceDue || u.monthlyRent)} | Échéance : ${formatDateFR(t.rentValidUntil)} | Garant : ${t.guarantor.noGuarantorRequired ? 'Aucun' : `${t.guarantor.fullName} (${t.guarantor.phone})`}`
+          `   - Porte ${u.code} : ${t.fullName} (${t.phone}) | Solde Net Dû : ${formatFCFA(bal.globalNetDue)} | Échéance : ${formatDateFR(t.rentValidUntil)}`
         );
       });
     }
@@ -87,24 +99,25 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
     } else {
       partialUnits.forEach((u) => {
         const t = u.tenant!;
+        const bal = calculateUnitSeparatedBalances(u);
         lines.push(
-          `   - Porte ${u.code} : ${t.fullName} (${t.phone}) | Versé : ${formatFCFA(t.amountPaidCurrentPeriod)} | Reste à payer : ${formatFCFA(t.balanceDue)} | Note : ${t.arrangementNotes || '—'}`
+          `   - Porte ${u.code} : ${t.fullName} (${t.phone}) | Versé Loyer : ${formatFCFA(t.amountPaidCurrentPeriod)} | Reste Global Net : ${formatFCFA(bal.globalNetDue)} | Note : ${t.arrangementNotes || '—'}`
         );
       });
     }
 
     lines.push(
       ``,
-      `3. ÉCHÉANCES ARRIVANT DANS MOINS DE ${settings.alertDaysBeforeDue} JOURS (${dueSoonUnits.length}) :`
+      `3. ALERTES PRÉVENTIVES À 3 MOIS (<= 3 MOIS DE COUVERTURE RESTANTS : ${preventiveThreeMonthsUnits.length}) :`
     );
-    if (dueSoonUnits.length === 0) {
-      lines.push(`   Aucune échéance imminente.`);
+    if (preventiveThreeMonthsUnits.length === 0) {
+      lines.push(`   Aucun locataire avec <= 3 mois restants.`);
     } else {
-      dueSoonUnits.forEach((u) => {
+      preventiveThreeMonthsUnits.forEach((u) => {
         const t = u.tenant!;
-        const days = getDaysUntilDue(t.rentValidUntil);
+        const rem = getRemainingMonthsCovered(u);
         lines.push(
-          `   - Porte ${u.code} : ${t.fullName} (${t.phone}) | Fin de validité le ${formatDateFR(t.rentValidUntil)} (dans ${days} jour(s)) | Loyer : ${formatFCFA(u.monthlyRent)}`
+          `   - Porte ${u.code} : ${t.fullName} (${t.phone}) | Reste : ${rem} mois couvert(s) | Fin le ${formatDateFR(t.rentValidUntil)} | Loyer : ${formatFCFA(u.monthlyRent)}/mois`
         );
       });
     }
@@ -112,18 +125,17 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
     lines.push(
       ``,
       `--------------------------------------------------------------------`,
-      `Rapport généré automatiquement par Conrad Solution — Gestion Immobilière.`
+      `Rapport généré automatiquement par Conrad Solutions — Gestion Immobilière.`
     );
 
     return lines.join('\n');
   }, [
     settings.ownerName,
-    settings.alertDaysBeforeDue,
     activeBuilding.name,
     totalLateAndPartialAmount,
     lateUnits,
     partialUnits,
-    dueSoonUnits,
+    preventiveThreeMonthsUnits,
   ]);
 
   const handleCopyReport = () => {
@@ -141,6 +153,75 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
 
   return (
     <>
+      {/* BANNIÈRE DÉDIÉE : SYSTÈME D'ALERTE PRÉVENTIVE À 3 MOIS (<= 3 MOIS RESTANTS) */}
+      {preventiveThreeMonthsUnits.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-4 rounded-2xl bg-gradient-to-r from-amber-500/15 via-amber-50 to-orange-50 border-2 border-[#F59E0B] p-4 sm:p-5 shadow-sm"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-[#F59E0B] text-white flex items-center justify-center shadow-sm shrink-0">
+                <CalendarClock className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-base sm:text-lg font-extrabold text-[#0F172A]">
+                    Système d’Alerte Préventive à 3 Mois (Rappel Automatique)
+                  </h3>
+                  <span className="px-3 py-0.5 rounded-full bg-[#F59E0B] text-white text-xs font-extrabold">
+                    Échéance proche : &lt;= 3 mois restants ({preventiveThreeMonthsUnits.length}{' '}
+                    locataire{preventiveThreeMonthsUnits.length > 1 ? 's' : ''})
+                  </span>
+                </div>
+                <p className="text-xs sm:text-sm text-amber-950 font-medium mt-0.5">
+                  Ces locataires ont <strong>3 mois ou moins de loyer payé d’avance</strong>. Cliquez sur le bouton WhatsApp pour leur envoyer un rappel courtois de renouvellement.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-52 overflow-y-auto pr-1">
+            {preventiveThreeMonthsUnits.map((u) => {
+              const remMonths = getRemainingMonthsCovered(u);
+              return (
+                <div
+                  key={u.id}
+                  className="p-3 rounded-xl bg-white border border-amber-300 shadow-xs flex items-center justify-between gap-2"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onSelectUnit(u)}
+                    className="text-left group cursor-pointer min-w-0"
+                  >
+                    <div className="font-extrabold text-sm text-[#0F172A] group-hover:text-[#2563EB] truncate">
+                      {u.code} — {u.tenant?.fullName}
+                    </div>
+                    <div className="text-xs font-extrabold text-[#B45309]">
+                      ⚠️ Échéance proche : {remMonths} mois restant{remMonths > 1 ? 's' : ''} (fin{' '}
+                      {formatDateFR(u.tenant?.rentValidUntil)})
+                    </div>
+                  </button>
+
+                  <a
+                    href={buildPreventiveThreeMonthsWhatsAppUrl(u, settings)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Envoyer un rappel préventif courtois à 3 mois sur WhatsApp"
+                    className="px-3 py-2 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs font-extrabold flex items-center gap-1.5 shrink-0 shadow-xs"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    <span>Rappel 3 Mois</span>
+                  </a>
+                </div>
+              );
+            })}
+          </div>
+        </motion.div>
+      )}
+
+      {/* BANNIÈRE CENTRALE DES ALERTES & RECOUVREMENTS */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -158,11 +239,11 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
                 </h2>
                 <span className="px-2.5 py-0.5 text-xs font-bold rounded-full bg-red-500/20 text-red-200 border border-red-400/30">
                   {lateUnits.length} impayé(s) • {partialUnits.length} arrangement(s) •{' '}
-                  {dueSoonUnits.length} échéance(s) &lt; {settings.alertDaysBeforeDue}j
+                  {preventiveThreeMonthsUnits.length} alerte(s) &lt;= 3 mois
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-blue-100 mt-0.5">
-                Montant total en attente de recouvrement sur les logements occupés :{' '}
+                Solde Global Net à recouvrer (Loyers + Forfaits Eau + Reste Électricité ENEO) :{' '}
                 <strong className="text-amber-300 font-extrabold">
                   {formatFCFA(totalLateAndPartialAmount)}
                 </strong>
@@ -195,49 +276,52 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
               <span className="text-xs font-bold text-slate-600">Action immédiate</span>
             </div>
             <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-              {lateUnits.map((u) => (
-                <div
-                  key={u.id}
-                  className="p-2.5 rounded-lg bg-red-50/70 border border-red-200/80 flex items-center justify-between gap-2"
-                >
-                  <button
-                    type="button"
-                    onClick={() => onSelectUnit(u)}
-                    className="text-left group cursor-pointer"
+              {lateUnits.map((u) => {
+                const bal = calculateUnitSeparatedBalances(u);
+                return (
+                  <div
+                    key={u.id}
+                    className="p-2.5 rounded-lg bg-red-50/70 border border-red-200/80 flex items-center justify-between gap-2"
                   >
-                    <div className="font-extrabold text-sm text-[#0F172A] group-hover:text-[#2563EB]">
-                      {u.code} — {u.tenant?.fullName}
-                    </div>
-                    <div className="text-xs font-bold text-[#EF4444]">
-                      Dû : {formatFCFA(u.tenant?.balanceDue || u.monthlyRent)}
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <a
-                      href={buildTenantWhatsAppUrl(u, settings)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="Relancer le locataire sur WhatsApp"
-                      className="px-2.5 py-1.5 rounded-lg bg-[#10B981] hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1"
+                    <button
+                      type="button"
+                      onClick={() => onSelectUnit(u)}
+                      className="text-left group cursor-pointer"
                     >
-                      <MessageCircle className="w-3.5 h-3.5" />
-                      <span>Locataire</span>
-                    </a>
-                    {u.tenant && !u.tenant.guarantor.noGuarantorRequired && (
+                      <div className="font-extrabold text-sm text-[#0F172A] group-hover:text-[#2563EB]">
+                        {u.code} — {u.tenant?.fullName}
+                      </div>
+                      <div className="text-xs font-bold text-[#EF4444]">
+                        Solde Net Dû : {formatFCFA(bal.globalNetDue || u.monthlyRent)}
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <a
-                        href={buildGuarantorWhatsAppUrl(u, settings)}
+                        href={buildTenantWhatsAppUrl(u, settings)}
                         target="_blank"
                         rel="noopener noreferrer"
-                        title="Contacter le parent / garant sur WhatsApp"
-                        className="px-2.5 py-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#2563EB] text-white text-xs font-bold flex items-center gap-1"
+                        title="Relancer le locataire sur WhatsApp"
+                        className="px-2.5 py-1.5 rounded-lg bg-[#10B981] hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1"
                       >
                         <MessageCircle className="w-3.5 h-3.5" />
-                        <span>Garant</span>
+                        <span>Locataire</span>
                       </a>
-                    )}
+                      {u.tenant && !u.tenant.guarantor.noGuarantorRequired && (
+                        <a
+                          href={buildGuarantorWhatsAppUrl(u, settings)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Contacter le parent / garant sur WhatsApp"
+                          className="px-2.5 py-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#2563EB] text-white text-xs font-bold flex items-center gap-1"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5" />
+                          <span>Garant</span>
+                        </a>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               {lateUnits.length === 0 && (
                 <p className="text-xs text-slate-500 py-2">Aucun retard ce mois-ci.</p>
               )}
@@ -254,61 +338,65 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
               <span className="text-xs font-bold text-slate-600">Soldes promis</span>
             </div>
             <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-              {partialUnits.map((u) => (
-                <div
-                  key={u.id}
-                  className="p-2.5 rounded-lg bg-amber-50/70 border border-amber-200/80 flex items-center justify-between gap-2"
-                >
-                  <button
-                    type="button"
-                    onClick={() => onSelectUnit(u)}
-                    className="text-left group cursor-pointer"
+              {partialUnits.map((u) => {
+                const bal = calculateUnitSeparatedBalances(u);
+                return (
+                  <div
+                    key={u.id}
+                    className="p-2.5 rounded-lg bg-amber-50/70 border border-amber-200/80 flex items-center justify-between gap-2"
                   >
-                    <div className="font-extrabold text-sm text-[#0F172A] group-hover:text-[#2563EB]">
-                      {u.code} — {u.tenant?.fullName}
-                    </div>
-                    <div className="text-xs font-bold text-[#B45309]">
-                      Reste à payer : {formatFCFA(u.tenant?.balanceDue || 0)}
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <a
-                      href={buildTenantWhatsAppUrl(u, settings)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2.5 py-1.5 rounded-lg bg-[#F59E0B] hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1"
+                    <button
+                      type="button"
+                      onClick={() => onSelectUnit(u)}
+                      className="text-left group cursor-pointer"
                     >
-                      <MessageCircle className="w-3.5 h-3.5" />
-                      <span>Rappel</span>
-                    </a>
-                    {u.tenant && !u.tenant.guarantor.noGuarantorRequired && (
+                      <div className="font-extrabold text-sm text-[#0F172A] group-hover:text-[#2563EB]">
+                        {u.code} — {u.tenant?.fullName}
+                      </div>
+                      <div className="text-xs font-bold text-[#B45309]">
+                        Loyer : {formatFCFA(bal.rentBalanceDue)} | Global Net :{' '}
+                        {formatFCFA(bal.globalNetDue)}
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <a
-                        href={buildGuarantorWhatsAppUrl(u, settings)}
+                        href={buildTenantWhatsAppUrl(u, settings)}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="px-2.5 py-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#2563EB] text-white text-xs font-bold flex items-center gap-1"
+                        className="px-2.5 py-1.5 rounded-lg bg-[#F59E0B] hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1"
                       >
                         <MessageCircle className="w-3.5 h-3.5" />
-                        <span>Garant</span>
+                        <span>Rappel</span>
                       </a>
-                    )}
+                      {u.tenant && !u.tenant.guarantor.noGuarantorRequired && (
+                        <a
+                          href={buildGuarantorWhatsAppUrl(u, settings)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#2563EB] text-white text-xs font-bold flex items-center gap-1"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5" />
+                          <span>Garant</span>
+                        </a>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               {partialUnits.length === 0 && (
                 <p className="text-xs text-slate-500 py-2">Aucun arrangement en cours.</p>
               )}
             </div>
           </div>
 
-          {/* Colonne 3 : Échéances dans moins de 5 jours */}
+          {/* Colonne 3 : Échéances imminentes */}
           <div className="p-3.5 rounded-xl bg-white border border-blue-200">
             <div className="flex items-center justify-between mb-2.5">
               <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-[#2563EB]">
                 <BellRing className="w-4 h-4" />
                 Échéance &lt; {settings.alertDaysBeforeDue} jours ({dueSoonUnits.length})
               </span>
-              <span className="text-xs font-bold text-slate-600">Préavis doux</span>
+              <span className="text-xs font-bold text-slate-600">Préavis immédiat</span>
             </div>
             <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
               {dueSoonUnits.map((u) => {
@@ -372,7 +460,7 @@ export const AlertCenterBanner: React.FC<AlertCenterBannerProps> = ({ onSelectUn
                       Récapitulatif par E-mail au Propriétaire
                     </h3>
                     <p className="text-xs text-slate-300">
-                      Rapport complet des retards, arrangements et échéances proches
+                      Rapport complet des retards, arrangements et alertes préventives à 3 mois
                     </p>
                   </div>
                 </div>

@@ -1,5 +1,11 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
+  DEFAULT_APARTMENT_PRICE,
+  DEFAULT_SHOP_PRICE,
+  DEFAULT_WAREHOUSE_PRICE,
+  DEFAULT_WATER_FLAT_FEE,
+} from '@config/constants';
+import {
   BASE_ANNUAL_HISTORY,
   generateInitialUnits,
   INITIAL_BUILDINGS,
@@ -10,6 +16,7 @@ import {
 } from '../data/seedData';
 import {
   BuildingConfig,
+  CorridorSide,
   ExpenseRecord,
   LandlordSettings,
   MonthlyFinancialPoint,
@@ -18,6 +25,7 @@ import {
   RentalUnit,
   TenantInfo,
   UnitStatus,
+  UnitType,
   UtilityMeterReading,
 } from '../types';
 import { addMonthsToDate, calculateSlidingRentPayment } from '../utils/formatters';
@@ -36,6 +44,18 @@ interface RecordPaymentInput {
   customCreditCarryOver?: number;
 }
 
+export interface AddCustomUnitInput {
+  code: string;
+  type: UnitType;
+  subTypeLabel?: string;
+  locationLabel?: string;
+  floor: number;
+  side?: CorridorSide;
+  monthlyRent: number;
+  waterFlatFee: number;
+  electricityMode: 'METER' | 'FLAT';
+}
+
 interface AppContextType {
   isAuthenticated: boolean;
   login: () => void;
@@ -49,8 +69,12 @@ interface AppContextType {
     city: string,
     neighborhood: string,
     roomCount: number,
-    studioCount: number
+    studioCount: number,
+    apartmentCount?: number,
+    shopCount?: number,
+    warehouseCount?: number
   ) => void;
+  addCustomUnit: (input: AddCustomUnitInput) => RentalUnit;
   units: RentalUnit[];
   allUnits: RentalUnit[];
   payments: PaymentRecord[];
@@ -84,6 +108,42 @@ const STORAGE_KEYS = {
   SETTINGS: 'conrad_solutions_settings_v2',
 };
 
+/**
+ * Migration silencieuse V1 -> V2 sans aucune perte de données :
+ * S'assure que chaque logement existant dans localStorage dispose bien du forfait Eau (2000 / 1500 FCFA)
+ * et du mini-compte courant Électricité (Facturé, Versé, Reste à payer, Crédit).
+ */
+function normalizeUnitForV2(unit: RentalUnit): RentalUnit {
+  const u = unit.utilities || ({} as UtilityMeterReading);
+  const waterFlatFee =
+    typeof u.waterFlatFee === 'number' ? u.waterFlatFee : DEFAULT_WATER_FLAT_FEE;
+  const electricityAmountDue = Math.max(0, u.electricityAmountDue || 0);
+  const electricityAmountPaid =
+    typeof u.electricityAmountPaid === 'number'
+      ? u.electricityAmountPaid
+      : u.electricityPaid
+      ? electricityAmountDue
+      : 0;
+  const electricityBalanceDue = Math.max(0, electricityAmountDue - electricityAmountPaid);
+  const electricityCredit = Math.max(0, electricityAmountPaid - electricityAmountDue);
+
+  return {
+    ...unit,
+    utilities: {
+      ...u,
+      waterMode: 'FLAT',
+      waterFlatFee,
+      waterAmountDue: waterFlatFee,
+      electricityMode: u.electricityMode || 'METER',
+      electricityAmountDue,
+      electricityAmountPaid,
+      electricityBalanceDue,
+      electricityCredit,
+      electricityPaid: u.electricityPaid || electricityBalanceDue === 0,
+    },
+  };
+}
+
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -113,7 +173,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length >= 35) return parsed;
+        if (Array.isArray(parsed) && parsed.length >= 35) {
+          return parsed.map(normalizeUnitForV2);
+        }
       } catch {
         // fallback
       }
@@ -149,7 +211,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const saved = localStorage.getItem(STORAGE_KEYS.SETTINGS);
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        return {
+          ...INITIAL_LANDLORD_SETTINGS,
+          ...parsed,
+          waterFlatFee: parsed.waterFlatFee || DEFAULT_WATER_FLAT_FEE,
+        };
       } catch {
         // fallback
       }
@@ -204,12 +271,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const login = () => setIsAuthenticated(true);
   const logout = () => setIsAuthenticated(false);
 
+  const createDefaultUtilities = (waterFee = DEFAULT_WATER_FLAT_FEE): UtilityMeterReading => ({
+    waterMode: 'FLAT',
+    waterFlatFee: waterFee,
+    waterOldIndex: 0,
+    waterNewIndex: 0,
+    waterUnitPrice: settings.waterM3Price,
+    waterAmountDue: waterFee,
+    waterPaid: true,
+    electricityMode: 'METER',
+    electricityOldIndex: 0,
+    electricityNewIndex: 0,
+    electricityUnitPrice: settings.electricityKwhPrice,
+    electricityAmountDue: 0,
+    electricityAmountPaid: 0,
+    electricityBalanceDue: 0,
+    electricityCredit: 0,
+    electricityPaid: true,
+    lastReadingDate: new Date().toISOString().slice(0, 10),
+  });
+
   const addBuilding = (
     name: string,
     city: string,
     neighborhood: string,
     roomCount: number,
-    studioCount: number
+    studioCount: number,
+    apartmentCount = 0,
+    shopCount = 0,
+    warehouseCount = 0
   ) => {
     const newId = `bldg-${Date.now()}`;
     const newBuilding: BuildingConfig = {
@@ -219,14 +309,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       neighborhood,
       defaultRoomPrice: settings.defaultRoomPrice,
       defaultStudioPrice: settings.defaultStudioPrice,
+      defaultApartmentPrice: DEFAULT_APARTMENT_PRICE,
+      defaultShopPrice: DEFAULT_SHOP_PRICE,
+      defaultWarehousePrice: DEFAULT_WAREHOUSE_PRICE,
       waterM3Price: settings.waterM3Price,
-      waterFlatFee: settings.waterFlatFee,
+      waterFlatFee: DEFAULT_WATER_FLAT_FEE,
       electricityKwhPrice: settings.electricityKwhPrice,
       electricityFlatFee: settings.electricityFlatFee,
       createdAt: new Date().toISOString().slice(0, 10),
     };
 
     const generatedUnits: RentalUnit[] = [];
+
+    // Studios
     for (let s = 1; s <= studioCount; s++) {
       const floor = Math.min(3, Math.ceil(s / 2));
       const numOnFloor = ((s - 1) % 2) + 1;
@@ -242,24 +337,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         monthlyRent: settings.defaultStudioPrice,
         status: 'VACANT',
         tenant: null,
-        utilities: {
-          waterMode: 'METER',
-          waterOldIndex: 0,
-          waterNewIndex: 0,
-          waterUnitPrice: settings.waterM3Price,
-          waterAmountDue: 0,
-          waterPaid: true,
-          electricityMode: 'METER',
-          electricityOldIndex: 0,
-          electricityNewIndex: 0,
-          electricityUnitPrice: settings.electricityKwhPrice,
-          electricityAmountDue: 0,
-          electricityPaid: true,
-          lastReadingDate: new Date().toISOString().slice(0, 10),
-        },
+        utilities: createDefaultUtilities(DEFAULT_WATER_FLAT_FEE),
       });
     }
 
+    // Chambres
     for (let i = 1; i <= roomCount; i++) {
       const floor = Math.floor((i - 1) / 8);
       const numOnFloor = ((i - 1) % 8) + 1;
@@ -275,27 +357,106 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         monthlyRent: settings.defaultRoomPrice,
         status: 'VACANT',
         tenant: null,
-        utilities: {
-          waterMode: 'METER',
-          waterOldIndex: 0,
-          waterNewIndex: 0,
-          waterUnitPrice: settings.waterM3Price,
-          waterAmountDue: 0,
-          waterPaid: true,
-          electricityMode: 'METER',
-          electricityOldIndex: 0,
-          electricityNewIndex: 0,
-          electricityUnitPrice: settings.electricityKwhPrice,
-          electricityAmountDue: 0,
-          electricityPaid: true,
-          lastReadingDate: new Date().toISOString().slice(0, 10),
-        },
+        utilities: createDefaultUtilities(DEFAULT_WATER_FLAT_FEE),
+      });
+    }
+
+    // Appartements (T2, T3, etc.)
+    for (let a = 1; a <= apartmentCount; a++) {
+      const floor = Math.min(3, Math.ceil(a / 2));
+      const code = `APT0${a}`;
+      generatedUnits.push({
+        id: `${newId}-${code.toLowerCase()}-${a}`,
+        buildingId: newId,
+        code,
+        type: 'APARTMENT',
+        subTypeLabel: 'Appartement T3',
+        floor,
+        side: a % 2 === 1 ? 'LEFT_ODD' : 'RIGHT_EVEN',
+        corridorPosition: 6 + Math.ceil(a / 2),
+        monthlyRent: DEFAULT_APARTMENT_PRICE,
+        status: 'VACANT',
+        tenant: null,
+        utilities: createDefaultUtilities(DEFAULT_WATER_FLAT_FEE),
+      });
+    }
+
+    // Boutiques / Locaux Commerciaux
+    for (let sh = 1; sh <= shopCount; sh++) {
+      const code = `BTQ0${sh}`;
+      generatedUnits.push({
+        id: `${newId}-${code.toLowerCase()}-${sh}`,
+        buildingId: newId,
+        code,
+        type: 'SHOP',
+        subTypeLabel: 'Boutique Commerciale',
+        locationLabel: 'Façade Rue (RDC)',
+        floor: 0,
+        side: sh % 2 === 1 ? 'LEFT_ODD' : 'RIGHT_EVEN',
+        corridorPosition: 10 + Math.ceil(sh / 2),
+        monthlyRent: DEFAULT_SHOP_PRICE,
+        status: 'VACANT',
+        tenant: null,
+        utilities: createDefaultUtilities(DEFAULT_WATER_FLAT_FEE),
+      });
+    }
+
+    // Magasins / Entrepôts
+    for (let w = 1; w <= warehouseCount; w++) {
+      const code = `MAG0${w}`;
+      generatedUnits.push({
+        id: `${newId}-${code.toLowerCase()}-${w}`,
+        buildingId: newId,
+        code,
+        type: 'WAREHOUSE',
+        subTypeLabel: 'Magasin / Entrepôt',
+        locationLabel: 'Zone Commerciale RDC',
+        floor: 0,
+        side: w % 2 === 1 ? 'LEFT_ODD' : 'RIGHT_EVEN',
+        corridorPosition: 15 + Math.ceil(w / 2),
+        monthlyRent: DEFAULT_WAREHOUSE_PRICE,
+        status: 'VACANT',
+        tenant: null,
+        utilities: createDefaultUtilities(0),
       });
     }
 
     setBuildings((prev) => [...prev, newBuilding]);
     setAllUnits((prev) => [...prev, ...generatedUnits]);
     setActiveBuildingId(newId);
+  };
+
+  /**
+   * Ajoute un bien personnalisé (Chambre, Studio, Appartement T2/T3, Boutique, Magasin) à l'immeuble actif
+   */
+  const addCustomUnit = (input: AddCustomUnitInput): RentalUnit => {
+    const sameFloorUnits = units.filter((u) => u.floor === input.floor);
+    const maxPos = sameFloorUnits.reduce((m, u) => Math.max(m, u.corridorPosition), 0);
+    const nextSide: CorridorSide =
+      input.side || (sameFloorUnits.length % 2 === 0 ? 'LEFT_ODD' : 'RIGHT_EVEN');
+    const nextPos = sameFloorUnits.length % 2 === 0 ? maxPos + 1 : Math.max(1, maxPos);
+
+    const newUnit: RentalUnit = {
+      id: `unit-custom-${Date.now()}`,
+      buildingId: activeBuilding.id,
+      code: input.code.trim().toUpperCase(),
+      type: input.type,
+      subTypeLabel: input.subTypeLabel?.trim() || undefined,
+      locationLabel: input.locationLabel?.trim() || undefined,
+      floor: input.floor,
+      side: nextSide,
+      corridorPosition: nextPos,
+      monthlyRent: input.monthlyRent,
+      status: 'VACANT',
+      tenant: null,
+      utilities: {
+        ...createDefaultUtilities(input.waterFlatFee),
+        electricityMode: input.electricityMode,
+      },
+    };
+
+    setAllUnits((prev) => [...prev, newUnit]);
+    return newUnit;
   };
 
   const updateSettings = (newSettings: LandlordSettings, applyPricesToUnits = false) => {
@@ -305,12 +466,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         prev.map((u) => {
           if (u.buildingId !== activeBuilding.id) return u;
           const updatedRent =
-            u.type === 'ROOM' ? newSettings.defaultRoomPrice : newSettings.defaultStudioPrice;
+            u.type === 'ROOM'
+              ? newSettings.defaultRoomPrice
+              : u.type === 'STUDIO'
+              ? newSettings.defaultStudioPrice
+              : u.monthlyRent;
           return {
             ...u,
             monthlyRent: updatedRent,
             utilities: {
               ...u.utilities,
+              waterFlatFee: newSettings.waterFlatFee,
+              waterAmountDue: newSettings.waterFlatFee,
               waterUnitPrice: newSettings.waterM3Price,
               electricityUnitPrice: newSettings.electricityKwhPrice,
             },
@@ -356,9 +523,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAllUnits((prev) =>
       prev.map((u) => {
         if (u.id !== unitId) return u;
+        const elecBilled = Math.max(0, utilities.electricityAmountDue || 0);
+        const elecPaidAmt = Math.max(0, utilities.electricityAmountPaid || 0);
+        const elecRemaining = Math.max(0, elecBilled - elecPaidAmt);
+        const elecCredit = Math.max(0, elecPaidAmt - elecBilled);
+        const waterFee =
+          typeof utilities.waterFlatFee === 'number'
+            ? utilities.waterFlatFee
+            : DEFAULT_WATER_FLAT_FEE;
+
         return {
           ...u,
-          utilities,
+          utilities: {
+            ...utilities,
+            waterMode: 'FLAT',
+            waterFlatFee: waterFee,
+            waterAmountDue: waterFee,
+            electricityBalanceDue: elecRemaining,
+            electricityCredit: elecCredit,
+            electricityPaid: utilities.electricityPaid || elecRemaining === 0,
+          },
         };
       })
     );
@@ -432,6 +616,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAllUnits((prev) =>
       prev.map((u) => {
         if (u.id !== targetUnit.id || !u.tenant) return u;
+        const newElecPaidAmount =
+          (u.utilities.electricityAmountPaid || 0) + input.electricityAmountPaid;
+        const elecBilled = u.utilities.electricityAmountDue || 0;
+        const newElecBalanceDue = Math.max(0, elecBilled - newElecPaidAmount);
+        const newElecCredit = Math.max(0, newElecPaidAmount - elecBilled);
+
         return {
           ...u,
           status: newStatus,
@@ -448,7 +638,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           utilities: {
             ...u.utilities,
             waterPaid: input.waterAmountPaid > 0 ? true : u.utilities.waterPaid,
-            electricityPaid: input.electricityAmountPaid > 0 ? true : u.utilities.electricityPaid,
+            electricityAmountPaid: newElecPaidAmount,
+            electricityBalanceDue: newElecBalanceDue,
+            electricityCredit: newElecCredit,
+            electricityPaid:
+              newElecBalanceDue === 0
+                ? true
+                : input.electricityAmountPaid > 0
+                ? newElecBalanceDue === 0
+                : u.utilities.electricityPaid,
           },
         };
       })
@@ -471,7 +669,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const due = new Date(`${u.tenant.rentValidUntil}T12:00:00`);
         if (isNaN(due.getTime()) || due >= today) return u;
 
-        // Si l'échéance est dépassée et que le solde n'a pas encore intégré le mois échu
         if (u.tenant.balanceDue === 0) {
           updatedCount++;
           const credit = u.tenant.creditBalance || 0;
@@ -571,6 +768,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         activeBuilding,
         setActiveBuildingId,
         addBuilding,
+        addCustomUnit,
         units,
         allUnits,
         payments,

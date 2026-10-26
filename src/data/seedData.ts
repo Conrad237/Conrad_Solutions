@@ -1,9 +1,14 @@
 import {
+  DEFAULT_APARTMENT_PRICE,
   DEFAULT_ELECTRICITY_KWH_PRICE,
   DEFAULT_LANDLORD_CONFIG,
   DEFAULT_ROOM_PRICE,
+  DEFAULT_SHOP_PRICE,
   DEFAULT_STUDIO_PRICE,
+  DEFAULT_WAREHOUSE_PRICE,
+  DEFAULT_WATER_FLAT_FEE,
   DEFAULT_WATER_M3_PRICE,
+  REDUCED_WATER_FLAT_FEE,
 } from '@config/constants';
 import {
   BuildingConfig,
@@ -28,8 +33,11 @@ export const INITIAL_BUILDINGS: BuildingConfig[] = [
     neighborhood: DEFAULT_LANDLORD_CONFIG.neighborhood,
     defaultRoomPrice: DEFAULT_ROOM_PRICE,
     defaultStudioPrice: DEFAULT_STUDIO_PRICE,
+    defaultApartmentPrice: DEFAULT_APARTMENT_PRICE,
+    defaultShopPrice: DEFAULT_SHOP_PRICE,
+    defaultWarehousePrice: DEFAULT_WAREHOUSE_PRICE,
     waterM3Price: DEFAULT_WATER_M3_PRICE,
-    waterFlatFee: 2500,
+    waterFlatFee: DEFAULT_WATER_FLAT_FEE,
     electricityKwhPrice: DEFAULT_ELECTRICITY_KWH_PRICE,
     electricityFlatFee: 5000,
     createdAt: '2024-01-10',
@@ -47,7 +55,7 @@ export const INITIAL_LANDLORD_SETTINGS: LandlordSettings = {
   defaultRoomPrice: DEFAULT_ROOM_PRICE,
   defaultStudioPrice: DEFAULT_STUDIO_PRICE,
   waterM3Price: DEFAULT_WATER_M3_PRICE,
-  waterFlatFee: 2500,
+  waterFlatFee: DEFAULT_WATER_FLAT_FEE,
   electricityKwhPrice: DEFAULT_ELECTRICITY_KWH_PRICE,
   electricityFlatFee: 5000,
 };
@@ -1266,9 +1274,26 @@ const SEED_BLUEPRINTS: SeedUnitBlueprint[] = [
 ];
 
 export function generateInitialUnits(): RentalUnit[] {
+  const reducedWaterCodes = new Set(['CH05', 'CH13', 'CH22', 'CH32']);
   return SEED_BLUEPRINTS.map((bp, idx) => {
-    const waterDiff = Math.max(0, bp.waterNew - bp.waterOld);
     const elecDiff = Math.max(0, bp.elecNew - bp.elecOld);
+    const waterFlatFee = reducedWaterCodes.has(bp.code)
+      ? REDUCED_WATER_FLAT_FEE
+      : DEFAULT_WATER_FLAT_FEE;
+    const electricityAmountDue = elecDiff * DEFAULT_ELECTRICITY_KWH_PRICE;
+
+    // Exemple d'avance/acompte partiel sur électricité pour CH03 et CH12
+    const partialElecAdvance =
+      bp.code === 'CH03'
+        ? 2000
+        : bp.code === 'CH12'
+        ? 1500
+        : bp.elecPaid
+        ? electricityAmountDue
+        : 0;
+    const electricityBalanceDue = Math.max(0, electricityAmountDue - partialElecAdvance);
+    const electricityCredit = Math.max(0, partialElecAdvance - electricityAmountDue);
+
     return {
       id: `unit-${bp.code.toLowerCase()}`,
       buildingId: MORO_BUILDING_ID,
@@ -1286,18 +1311,22 @@ export function generateInitialUnits(): RentalUnit[] {
           }
         : null,
       utilities: {
-        waterMode: 'METER',
+        waterMode: 'FLAT',
+        waterFlatFee,
         waterOldIndex: bp.waterOld,
         waterNewIndex: bp.waterNew,
         waterUnitPrice: DEFAULT_WATER_M3_PRICE,
-        waterAmountDue: waterDiff * DEFAULT_WATER_M3_PRICE,
+        waterAmountDue: waterFlatFee,
         waterPaid: bp.waterPaid,
         electricityMode: 'METER',
         electricityOldIndex: bp.elecOld,
         electricityNewIndex: bp.elecNew,
         electricityUnitPrice: DEFAULT_ELECTRICITY_KWH_PRICE,
-        electricityAmountDue: elecDiff * DEFAULT_ELECTRICITY_KWH_PRICE,
-        electricityPaid: bp.elecPaid,
+        electricityAmountDue,
+        electricityAmountPaid: partialElecAdvance,
+        electricityBalanceDue,
+        electricityCredit,
+        electricityPaid: bp.elecPaid || electricityBalanceDue === 0,
         lastReadingDate: '2026-10-20',
       },
     };

@@ -1,4 +1,4 @@
-export type UnitType = 'ROOM' | 'STUDIO';
+export type UnitType = 'ROOM' | 'STUDIO' | 'APARTMENT' | 'SHOP' | 'WAREHOUSE';
 
 export type UnitStatus = 'PAID' | 'PARTIAL' | 'LATE' | 'VACANT';
 
@@ -27,17 +27,24 @@ export interface GuarantorInfo {
 }
 
 export interface UtilityMeterReading {
+  // EAU (FORAGE) — Forfait mensuel fixe paramétrable par logement (par défaut 2 000 FCFA ou 1 500 FCFA)
   waterMode: 'METER' | 'FLAT';
+  waterFlatFee: number; // ex: 2000 FCFA ou 1500 FCFA (ou 0 si exonéré)
   waterOldIndex: number;
   waterNewIndex: number;
   waterUnitPrice: number;
-  waterAmountDue: number;
+  waterAmountDue: number; // Égal au forfait mensuel waterFlatFee
   waterPaid: boolean;
+
+  // ÉLECTRICITÉ (ENEO) — Mini-compte courant avec avances & paiements partiels
   electricityMode: 'METER' | 'FLAT';
   electricityOldIndex: number;
   electricityNewIndex: number;
   electricityUnitPrice: number;
-  electricityAmountDue: number;
+  electricityAmountDue: number; // Montant Facturé ENEO sur la période
+  electricityAmountPaid: number; // Montant Versé (Avance / Acompte Électricité)
+  electricityBalanceDue: number; // Reste à payer Électricité = max(0, Facturé - Versé)
+  electricityCredit: number; // Crédit d'avance Électricité reporté = max(0, Versé - Facturé)
   electricityPaid: boolean;
   lastReadingDate: string;
 }
@@ -55,8 +62,8 @@ export interface TenantInfo {
   depositPaid: number;
   advanceMonthsAtEntry: number;
   amountPaidCurrentPeriod: number;
-  balanceDue: number; // Reste à payer si paiement partiel ou retard
-  creditBalance?: number; // Crédit d'avance positif reporté sur le mois suivant (ex: +4 000 FCFA sur 100 000 FCFA versés)
+  balanceDue: number; // Reste à payer Loyer si paiement partiel ou retard
+  creditBalance?: number; // Crédit d'avance positif Loyer reporté sur le mois suivant
   arrangementNotes: string;
   guarantor: GuarantorInfo;
 }
@@ -66,6 +73,8 @@ export interface RentalUnit {
   buildingId: string;
   code: string;
   type: UnitType;
+  subTypeLabel?: string; // ex: "Appartement T3", "Boutique Façade", "Magasin Stockage"
+  locationLabel?: string; // ex: "Annexe Commerciale", "Rez-de-chaussée Rue"
   floor: number;
   side: CorridorSide;
   corridorPosition: number;
@@ -73,6 +82,21 @@ export interface RentalUnit {
   status: UnitStatus;
   tenant: TenantInfo | null;
   utilities: UtilityMeterReading;
+}
+
+export type TenantDocumentType = 'CNI' | 'LEASE_CONTRACT' | 'OTHER';
+
+export interface TenantDocumentRecord {
+  id: string;
+  unitId: string;
+  unitCode: string;
+  tenantName: string;
+  docType: TenantDocumentType;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  uploadedAt: string;
+  dataUrl: string; // Base64 Data URL stocké dans IndexedDB sur la machine du propriétaire
 }
 
 export interface PaymentRecord {
@@ -130,6 +154,9 @@ export interface BuildingConfig {
   neighborhood: string;
   defaultRoomPrice: number;
   defaultStudioPrice: number;
+  defaultApartmentPrice?: number;
+  defaultShopPrice?: number;
+  defaultWarehousePrice?: number;
   waterM3Price: number;
   waterFlatFee: number;
   electricityKwhPrice: number;

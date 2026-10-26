@@ -17,9 +17,9 @@ const MainAppContent: React.FC = () => {
   const { isAuthenticated, activeBuilding, settings } = useApp();
   const [activeTab, setActiveTab] = useState<MainTabId>('BUILDING_MAP');
   const [selectedUnit, setSelectedUnit] = useState<RentalUnit | null>(null);
-  const [slideOverInitialTab, setSlideOverInitialTab] = useState<'INFO' | 'PAYMENT' | 'UTILITIES'>(
-    'INFO'
-  );
+  const [slideOverInitialTab, setSlideOverInitialTab] = useState<
+    'INFO' | 'PAYMENT' | 'UTILITIES' | 'DOCUMENTS'
+  >('INFO');
   const [activeReceipt, setActiveReceipt] = useState<PaymentRecord | null>(null);
 
   if (!isAuthenticated) {
@@ -28,7 +28,7 @@ const MainAppContent: React.FC = () => {
 
   const handleOpenUnit = (
     unit: RentalUnit,
-    initialTab: 'INFO' | 'PAYMENT' | 'UTILITIES' = 'INFO'
+    initialTab: 'INFO' | 'PAYMENT' | 'UTILITIES' | 'DOCUMENTS' = 'INFO'
   ) => {
     setSlideOverInitialTab(initialTab);
     setSelectedUnit(unit);

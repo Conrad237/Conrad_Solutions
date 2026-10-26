@@ -6,6 +6,8 @@ import {
   Calculator,
   CheckCircle2,
   DoorOpen,
+  Download,
+  FileSpreadsheet,
   PlusCircle,
   Trash2,
   TrendingDown,
@@ -15,11 +17,28 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { ExpenseCategory, ExpenseStatus } from '../types';
+import { downloadMonthlyExcelReport } from '../utils/excelExport';
 import { formatDateFR, formatFCFA } from '../utils/formatters';
+
+const MONTH_NAMES = [
+  'Janvier',
+  'Février',
+  'Mars',
+  'Avril',
+  'Mai',
+  'Juin',
+  'Juillet',
+  'Août',
+  'Septembre',
+  'Octobre',
+  'Novembre',
+  'Décembre',
+];
 
 export const FinancesAndBudgetView: React.FC = () => {
   const {
     units,
+    payments,
     expenses,
     addExpense,
     updateExpense,
@@ -27,6 +46,9 @@ export const FinancesAndBudgetView: React.FC = () => {
     annualFinancials,
     activeBuilding,
   } = useApp();
+
+  const [reportMonth, setReportMonth] = useState<number>(9);
+  const [reportYear, setReportYear] = useState<number>(2026);
 
   // Formulaire d'ajout de dépense / travaux
   const [title, setTitle] = useState('');
@@ -157,6 +179,70 @@ export const FinancesAndBudgetView: React.FC = () => {
 
   return (
     <div className="space-y-8">
+      {/* 0. BARRE D'EXPORT EXCEL (.XLSX) : RAPPORT MENSUEL DYNAMIQUE */}
+      <div className="bg-gradient-to-r from-[#0F172A] via-[#1E3A8A] to-[#0F172A] text-white rounded-3xl p-5 sm:p-6 shadow-md flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-[#10B981] flex items-center justify-center shrink-0 shadow-sm">
+            <FileSpreadsheet className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h2 className="text-lg sm:text-xl font-extrabold text-white">
+              Rapport Mensuel Dynamique (Export Excel .xlsx)
+            </h2>
+            <p className="text-xs sm:text-sm text-blue-200 mt-0.5">
+              Génère un classeur Excel à 2 onglets : <strong>État Mensuel des Logements</strong> +{' '}
+              <strong>Synthèse Financière & Travaux</strong>
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <select
+            aria-label="Mois du rapport Excel"
+            value={reportMonth}
+            onChange={(e) => setReportMonth(Number(e.target.value))}
+            className="px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold text-sm cursor-pointer"
+          >
+            {MONTH_NAMES.map((m, idx) => (
+              <option key={m} value={idx}>
+                {m}
+              </option>
+            ))}
+          </select>
+
+          <select
+            aria-label="Année du rapport Excel"
+            value={reportYear}
+            onChange={(e) => setReportYear(Number(e.target.value))}
+            className="px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold text-sm cursor-pointer"
+          >
+            {[2025, 2026, 2027].map((yr) => (
+              <option key={yr} value={yr}>
+                {yr}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            onClick={() =>
+              downloadMonthlyExcelReport({
+                buildingName: activeBuilding.name,
+                monthIndex: reportMonth,
+                year: reportYear,
+                units,
+                payments,
+                expenses,
+              })
+            }
+            className="px-5 py-3 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white font-extrabold text-sm flex items-center gap-2 shadow-md cursor-pointer transition-all"
+          >
+            <Download className="w-4 h-4" />
+            <span>Télécharger le Rapport Mensuel (Excel)</span>
+          </button>
+        </div>
+      </div>
+
       {/* 1. CARTES DE SYNTHÈSE FINANCIÈRE : REVENUS ENCAISSÉS vs MANQUE À GAGNER vs DÉPENSES vs BÉNÉFICE NET */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {/* Carte 1 : Revenus Encaissés (Vert) */}
