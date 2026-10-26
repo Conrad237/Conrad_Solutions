@@ -1,0 +1,18 @@
+{
+  "name": "Conrad Solutions — Gestion de Flotte Immobilière & Locative",
+  "short_name": "Conrad Solutions",
+  "description": "La solution moderne pour la gestion locative et multi-bailleurs. Pilotez votre flotte immobilière en toute simplicité.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F172A",
+  "theme_color": "#0F172A",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
