@@ -72,9 +72,16 @@ interface AppContextType {
     studioCount: number,
     apartmentCount?: number,
     shopCount?: number,
-    warehouseCount?: number
+    warehouseCount?: number,
+    exactAddress?: string,
+    landmarkDescription?: string,
+    googleMapsUrl?: string
   ) => void;
+  updateBuildingInfo: (buildingId: string, updates: Partial<BuildingConfig>) => void;
+  deleteBuilding: (buildingId: string) => boolean;
+  restoreDefaultMoroBuilding: () => void;
   addCustomUnit: (input: AddCustomUnitInput) => RentalUnit;
+  deleteUnit: (unitId: string) => void;
   units: RentalUnit[];
   allUnits: RentalUnit[];
   payments: PaymentRecord[];
@@ -109,12 +116,18 @@ const STORAGE_KEYS = {
 };
 
 /**
- * Migration silencieuse V1 -> V2 sans aucune perte de données :
- * S'assure que chaque logement existant dans localStorage dispose bien du forfait Eau (2000 / 1500 FCFA)
- * et du mini-compte courant Électricité (Facturé, Versé, Reste à payer, Crédit).
+ * ============================================================================
+ * MOTEUR DE MIGRATION DOUCE (`mergeState`) SANS AUCUNE PERTE DE DONNÉES
+ * ============================================================================
+ * Lorsqu'une mise à jour du code est déployée à distance sur Vercel,
+ * ces fonctions fusionnent les nouvelles propriétés avec les données déjà
+ * enregistrées dans le navigateur du propriétaire (localStorage), SANS JAMAIS
+ * écraser ses locataires, paiements, montants ou suppressions.
  */
-function normalizeUnitForV2(unit: RentalUnit): RentalUnit {
-  const u = unit.utilities || ({} as UtilityMeterReading);
+function mergeUnitState(unit: RentalUnit, defaultUnit?: RentalUnit): RentalUnit {
+  const baseUnit = defaultUnit ? { ...defaultUnit, ...unit } : { ...unit };
+  const u = (unit.utilities || defaultUnit?.utilities || {}) as UtilityMeterReading;
+
   const waterFlatFee =
     typeof u.waterFlatFee === 'number' ? u.waterFlatFee : DEFAULT_WATER_FLAT_FEE;
   const electricityAmountDue = Math.max(0, u.electricityAmountDue || 0);
@@ -128,7 +141,11 @@ function normalizeUnitForV2(unit: RentalUnit): RentalUnit {
   const electricityCredit = Math.max(0, electricityAmountPaid - electricityAmountDue);
 
   return {
-    ...unit,
+    ...baseUnit,
+    // Préserve strictement le locataire, le loyer et le statut saisis par le propriétaire
+    monthlyRent: typeof unit.monthlyRent === 'number' ? unit.monthlyRent : baseUnit.monthlyRent,
+    status: unit.status || baseUnit.status,
+    tenant: unit.tenant !== undefined ? unit.tenant : baseUnit.tenant,
     utilities: {
       ...u,
       waterMode: 'FLAT',
@@ -144,50 +161,110 @@ function normalizeUnitForV2(unit: RentalUnit): RentalUnit {
   };
 }
 
-const AppContext = createContext<AppContextType | undefined>(undefined);
-
-export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.AUTH);
-    return saved !== null ? JSON.parse(saved) : false; // Sécurisé par défaut avec le mot de passe maître "Joël Brian"
-  });
-
-  const [buildings, setBuildings] = useState<BuildingConfig[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.BUILDINGS);
-    if (saved) {
+export function mergeState<T extends 'BUILDINGS' | 'UNITS' | 'SETTINGS'>(
+  type: T,
+  savedRaw: string | null
+): T extends 'BUILDINGS'
+  ? BuildingConfig[]
+  : T extends 'UNITS'
+  ? RentalUnit[]
+  : LandlordSettings {
+  if (type === 'BUILDINGS') {
+    const defaultMoro = INITIAL_BUILDINGS[0];
+    if (savedRaw) {
       try {
-        return JSON.parse(saved);
-      } catch {
-        // fallback
-      }
-    }
-    return INITIAL_BUILDINGS;
-  });
-
-  const [activeBuildingId, setActiveBuildingId] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEYS.ACTIVE_BLDG) || MORO_BUILDING_ID;
-  });
-
-  const [allUnits, setAllUnits] = useState<RentalUnit[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.UNITS);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length >= 35) {
-          return parsed.map(normalizeUnitForV2);
+        const parsed = JSON.parse(savedRaw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((b: BuildingConfig) => ({
+            ...defaultMoro,
+            ...b,
+            exactAddress:
+              b.exactAddress !== undefined
+                ? b.exactAddress
+                : b.id === MORO_BUILDING_ID
+                ? defaultMoro.exactAddress
+                : '',
+            landmarkDescription:
+              b.landmarkDescription !== undefined
+                ? b.landmarkDescription
+                : b.id === MORO_BUILDING_ID
+                ? defaultMoro.landmarkDescription
+                : '',
+            googleMapsUrl:
+              b.googleMapsUrl !== undefined
+                ? b.googleMapsUrl
+                : b.id === MORO_BUILDING_ID
+                ? defaultMoro.googleMapsUrl
+                : '',
+          })) as never;
         }
       } catch {
         // fallback
       }
     }
-    return generateInitialUnits();
+    return INITIAL_BUILDINGS as never;
+  }
+
+  if (type === 'UNITS') {
+    const defaults = generateInitialUnits();
+    if (savedRaw) {
+      try {
+        const parsed = JSON.parse(savedRaw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const defaultMap = new Map(defaults.map((d) => [d.id, d]));
+          return parsed.map((u: RentalUnit) =>
+            mergeUnitState(u, defaultMap.get(u.id))
+          ) as never;
+        }
+      } catch {
+        // fallback
+      }
+    }
+    return defaults as never;
+  }
+
+  // SETTINGS
+  if (savedRaw) {
+    try {
+      const parsed = JSON.parse(savedRaw);
+      return {
+        ...INITIAL_LANDLORD_SETTINGS,
+        ...parsed,
+        waterFlatFee: parsed.waterFlatFee || DEFAULT_WATER_FLAT_FEE,
+      } as never;
+    } catch {
+      // fallback
+    }
+  }
+  return INITIAL_LANDLORD_SETTINGS as never;
+}
+
+const AppContext = createContext<AppContextType | undefined>(undefined);
+
+export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.AUTH);
+    return saved !== null ? JSON.parse(saved) : false;
   });
+
+  const [buildings, setBuildings] = useState<BuildingConfig[]>(() =>
+    mergeState('BUILDINGS', localStorage.getItem(STORAGE_KEYS.BUILDINGS))
+  );
+
+  const [activeBuildingId, setActiveBuildingId] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_KEYS.ACTIVE_BLDG) || MORO_BUILDING_ID;
+  });
+
+  const [allUnits, setAllUnits] = useState<RentalUnit[]>(() =>
+    mergeState('UNITS', localStorage.getItem(STORAGE_KEYS.UNITS))
+  );
 
   const [allPayments, setAllPayments] = useState<PaymentRecord[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.PAYMENTS);
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
       } catch {
         // fallback
       }
@@ -199,7 +276,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const saved = localStorage.getItem(STORAGE_KEYS.EXPENSES);
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
       } catch {
         // fallback
       }
@@ -207,22 +285,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return INITIAL_EXPENSES;
   });
 
-  const [settings, setSettings] = useState<LandlordSettings>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        return {
-          ...INITIAL_LANDLORD_SETTINGS,
-          ...parsed,
-          waterFlatFee: parsed.waterFlatFee || DEFAULT_WATER_FLAT_FEE,
-        };
-      } catch {
-        // fallback
-      }
-    }
-    return INITIAL_LANDLORD_SETTINGS;
-  });
+  const [settings, setSettings] = useState<LandlordSettings>(() =>
+    mergeState('SETTINGS', localStorage.getItem(STORAGE_KEYS.SETTINGS))
+  );
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.AUTH, JSON.stringify(isAuthenticated));
@@ -253,7 +318,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [settings]);
 
   const activeBuilding = useMemo(() => {
-    return buildings.find((b) => b.id === activeBuildingId) || buildings[0];
+    return buildings.find((b) => b.id === activeBuildingId) || buildings[0] || INITIAL_BUILDINGS[0];
   }, [buildings, activeBuildingId]);
 
   const units = useMemo(() => {
@@ -299,7 +364,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     studioCount: number,
     apartmentCount = 0,
     shopCount = 0,
-    warehouseCount = 0
+    warehouseCount = 0,
+    exactAddress = '',
+    landmarkDescription = '',
+    googleMapsUrl = ''
   ) => {
     const newId = `bldg-${Date.now()}`;
     const newBuilding: BuildingConfig = {
@@ -307,6 +375,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       name,
       city,
       neighborhood,
+      exactAddress,
+      landmarkDescription,
+      googleMapsUrl,
       defaultRoomPrice: settings.defaultRoomPrice,
       defaultStudioPrice: settings.defaultStudioPrice,
       defaultApartmentPrice: DEFAULT_APARTMENT_PRICE,
@@ -427,6 +498,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   /**
+   * Met à jour les informations et l'emplacement d'un immeuble (Nom, Ville, Quartier, Adresse précise, Repère, Lien Google Maps)
+   */
+  const updateBuildingInfo = (buildingId: string, updates: Partial<BuildingConfig>) => {
+    setBuildings((prev) =>
+      prev.map((b) => (b.id === buildingId ? { ...b, ...updates } : b))
+    );
+  };
+
+  /**
+   * Supprime un immeuble et toutes ses unités associées
+   */
+  const deleteBuilding = (buildingId: string): boolean => {
+    const remainingBuildings = buildings.filter((b) => b.id !== buildingId);
+    if (remainingBuildings.length === 0) {
+      // S'il ne reste plus aucun immeuble, on restaure la Résidence Moro par défaut pour éviter un écran vide
+      setBuildings(INITIAL_BUILDINGS);
+      setAllUnits(generateInitialUnits());
+      setActiveBuildingId(MORO_BUILDING_ID);
+      return true;
+    }
+
+    setBuildings(remainingBuildings);
+    setAllUnits((prev) => prev.filter((u) => u.buildingId !== buildingId));
+    if (activeBuildingId === buildingId) {
+      setActiveBuildingId(remainingBuildings[0].id);
+    }
+    return true;
+  };
+
+  /**
+   * Restaure la Résidence Moro par défaut (35 unités) en toute sécurité
+   * tout en conservant les éventuels autres immeubles créés par le propriétaire
+   */
+  const restoreDefaultMoroBuilding = () => {
+    const defaultMoro = INITIAL_BUILDINGS[0];
+    const defaultMoroUnits = generateInitialUnits();
+
+    setBuildings((prev) => {
+      const others = prev.filter((b) => b.id !== MORO_BUILDING_ID);
+      return [defaultMoro, ...others];
+    });
+
+    setAllUnits((prev) => {
+      const otherUnits = prev.filter((u) => u.buildingId !== MORO_BUILDING_ID);
+      return [...defaultMoroUnits, ...otherUnits];
+    });
+
+    setActiveBuildingId(MORO_BUILDING_ID);
+  };
+
+  /**
    * Ajoute un bien personnalisé (Chambre, Studio, Appartement T2/T3, Boutique, Magasin) à l'immeuble actif
    */
   const addCustomUnit = (input: AddCustomUnitInput): RentalUnit => {
@@ -457,6 +579,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setAllUnits((prev) => [...prev, newUnit]);
     return newUnit;
+  };
+
+  /**
+   * Supprime une unité individuelle (chambre, studio, appartement, boutique, magasin)
+   */
+  const deleteUnit = (unitId: string) => {
+    setAllUnits((prev) => prev.filter((u) => u.id !== unitId));
   };
 
   const updateSettings = (newSettings: LandlordSettings, applyPricesToUnits = false) => {
@@ -655,10 +784,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newPayment;
   };
 
-  /**
-   * Actualisation automatique des soldes glissants pour les locataires dont l'échéance est dépassée :
-   * Le loyer échu s'ajoute automatiquement au total en déduisant d'abord le crédit d'avance éventuel.
-   */
   const refreshOverdueBalances = (): number => {
     let updatedCount = 0;
     const today = new Date('2026-10-26T12:00:00');
@@ -768,7 +893,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         activeBuilding,
         setActiveBuildingId,
         addBuilding,
+        updateBuildingInfo,
+        deleteBuilding,
+        restoreDefaultMoroBuilding,
         addCustomUnit,
+        deleteUnit,
         units,
         allUnits,
         payments,

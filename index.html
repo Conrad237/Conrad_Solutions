@@ -3,9 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <link rel="manifest" href="/manifest.json" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0F172A" />
+    <meta
+      http-equiv="Cache-Control"
+      content="no-cache, no-store, must-revalidate"
+    />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <meta
       name="description"
       content="Conrad Solutions — La solution moderne pour la gestion locative et multi-bailleurs. Pilotez votre flotte immobilière en toute simplicité."
@@ -22,26 +27,20 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
+      // Désactive tout cache Service Worker bloquant pour garantir que chaque mise à jour
+      // poussée sur GitHub/Vercel est immédiatement visible en ligne (sans toucher à localStorage ni IndexedDB)
       if ('serviceWorker' in navigator) {
-        let refreshing = false;
-        navigator.serviceWorker.addEventListener('controllerchange', () => {
-          if (refreshing) return;
-          refreshing = true;
-          window.location.reload();
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          for (const registration of registrations) {
+            registration.unregister();
+          }
         });
-
-        window.addEventListener('load', () => {
-          navigator.serviceWorker
-            .register('/sw.js')
-            .then((reg) => {
-              reg.update();
-              document.addEventListener('visibilitychange', () => {
-                if (document.visibilityState === 'visible') {
-                  reg.update();
-                }
-              });
-            })
-            .catch(() => {});
+      }
+      if ('caches' in window) {
+        caches.keys().then((keys) => {
+          for (const key of keys) {
+            caches.delete(key);
+          }
         });
       }
     </script>

@@ -147,11 +147,26 @@ export interface MonthlyFinancialPoint {
   netProfit: number;
 }
 
+export interface BuildingPhotoRecord {
+  id: string;
+  buildingId: string;
+  buildingName: string;
+  caption: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  uploadedAt: string;
+  dataUrl: string; // Base64 Data URL stocké dans IndexedDB du navigateur
+}
+
 export interface BuildingConfig {
   id: string;
   name: string;
   city: string;
   neighborhood: string;
+  exactAddress?: string;
+  landmarkDescription?: string;
+  googleMapsUrl?: string;
   defaultRoomPrice: number;
   defaultStudioPrice: number;
   defaultApartmentPrice?: number;

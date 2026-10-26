@@ -1,10 +1,11 @@
-import { RentalUnit, TenantDocumentRecord } from '../types';
+import { BuildingPhotoRecord, RentalUnit, TenantDocumentRecord } from '../types';
 import { RESIDENCE_INTERNAL_RULES } from '../../config/constants';
 import { formatDateFR, formatFCFA, getUnitFullLabel } from './formatters';
 
 const DB_NAME = 'conrad_solutions_documents_db_v2';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'tenant_documents';
+const BUILDING_PHOTOS_STORE = 'building_photos';
 
 function openDocumentsDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -20,6 +21,10 @@ function openDocumentsDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
         store.createIndex('by_unitId', 'unitId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(BUILDING_PHOTOS_STORE)) {
+        const photoStore = db.createObjectStore(BUILDING_PHOTOS_STORE, { keyPath: 'id' });
+        photoStore.createIndex('by_buildingId', 'buildingId', { unique: false });
       }
     };
 
@@ -230,4 +235,68 @@ export async function exportUnitFolderToPC(
   setTimeout(() => URL.revokeObjectURL(url), 3000);
 
   return docs.length;
+}
+
+/**
+ * ============================================================================
+ * STOCKAGE DES PHOTOS D'IMMEUBLE DANS INDEXEDDB (SANS SATURER LOCALSTORAGE)
+ * ============================================================================
+ */
+export async function saveBuildingPhotoToIDB(photo: BuildingPhotoRecord): Promise<void> {
+  const db = await openDocumentsDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(BUILDING_PHOTOS_STORE, 'readwrite');
+    const store = tx.objectStore(BUILDING_PHOTOS_STORE);
+    store.put(photo);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+export async function getBuildingPhotosFromIDB(buildingId: string): Promise<BuildingPhotoRecord[]> {
+  try {
+    const db = await openDocumentsDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(BUILDING_PHOTOS_STORE, 'readonly');
+      const store = tx.objectStore(BUILDING_PHOTOS_STORE);
+      const index = store.index('by_buildingId');
+      const request = index.getAll(buildingId);
+
+      request.onsuccess = () => {
+        db.close();
+        const photos = (request.result || []) as BuildingPhotoRecord[];
+        photos.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+        resolve(photos);
+      };
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function deleteBuildingPhotoFromIDB(photoId: string): Promise<void> {
+  const db = await openDocumentsDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(BUILDING_PHOTOS_STORE, 'readwrite');
+    const store = tx.objectStore(BUILDING_PHOTOS_STORE);
+    store.delete(photoId);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
 }

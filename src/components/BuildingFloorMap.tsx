@@ -1,24 +1,34 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowUpRight,
   Building,
   CalendarClock,
+  Camera,
   Check,
   Clock,
   CreditCard,
   DoorOpen,
+  ExternalLink,
+  Eye,
   FileText,
   Footprints,
   Home,
   LayoutGrid,
+  MapPin,
   MessageCircle,
+  Pencil,
   Phone,
   PlusCircle,
   RefreshCw,
+  RotateCcw,
+  Save,
   Search,
   Sparkles,
+  Trash2,
+  Upload,
   UserPlus,
   Wallet,
   X,
@@ -33,7 +43,7 @@ import {
   REDUCED_WATER_FLAT_FEE,
 } from '@config/constants';
 import { useApp } from '../context/AppContext';
-import { RentalUnit, UnitStatus, UnitType } from '../types';
+import { BuildingPhotoRecord, RentalUnit, UnitStatus, UnitType } from '../types';
 import {
   buildGuarantorWhatsAppUrl,
   buildPreventiveThreeMonthsWhatsAppUrl,
@@ -47,6 +57,11 @@ import {
   getUnitTypeLabel,
   isPreventiveThreeMonthsAlert,
 } from '../utils/formatters';
+import {
+  deleteBuildingPhotoFromIDB,
+  getBuildingPhotosFromIDB,
+  saveBuildingPhotoToIDB,
+} from '../utils/indexedDbStorage';
 import { AlertCenterBanner } from './AlertCenterBanner';
 
 interface BuildingFloorMapProps {
@@ -60,12 +75,132 @@ type FloorFilter = 'ALL' | 0 | 1 | 2 | 3;
 type ViewMode = 'CORRIDOR' | 'GRID';
 
 export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit }) => {
-  const { units, settings, activeBuilding, refreshOverdueBalances, addCustomUnit } = useApp();
+  const {
+    units,
+    settings,
+    activeBuilding,
+    refreshOverdueBalances,
+    addCustomUnit,
+    updateBuildingInfo,
+    deleteBuilding,
+    restoreDefaultMoroBuilding,
+    deleteUnit,
+  } = useApp();
   const [selectedFloor, setSelectedFloor] = useState<FloorFilter>('ALL');
   const [statusFilter, setStatusFilter] = useState<UnitStatus | 'ALL'>('ALL');
   const [viewMode, setViewMode] = useState<ViewMode>('CORRIDOR');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+
+  // Galerie Photos & Emplacement de l'Immeuble Actif (IndexedDB)
+  const [buildingPhotos, setBuildingPhotos] = useState<BuildingPhotoRecord[]>([]);
+  const [photoCaptionInput, setPhotoCaptionInput] = useState('');
+  const [isUploadingBldgPhoto, setIsUploadingBldgPhoto] = useState(false);
+  const [lightboxPhoto, setLightboxPhoto] = useState<BuildingPhotoRecord | null>(null);
+  const [showLocationEditor, setShowLocationEditor] = useState(false);
+  const [bldgCityInput, setBldgCityInput] = useState('');
+  const [bldgNeighborhoodInput, setBldgNeighborhoodInput] = useState('');
+  const [bldgExactAddressInput, setBldgExactAddressInput] = useState('');
+  const [bldgLandmarkInput, setBldgLandmarkInput] = useState('');
+  const [bldgMapsUrlInput, setBldgMapsUrlInput] = useState('');
+
+  // Modales de confirmation de suppression (Unité, Immeuble & Restauration Résidence Moro)
+  const [unitToDelete, setUnitToDelete] = useState<RentalUnit | null>(null);
+  const [confirmDeleteActiveBuilding, setConfirmDeleteActiveBuilding] = useState(false);
+  const [confirmRestoreDefaultMoro, setConfirmRestoreDefaultMoro] = useState(false);
+
+  useEffect(() => {
+    if (!activeBuilding) return;
+    setBldgCityInput(activeBuilding.city || '');
+    setBldgNeighborhoodInput(activeBuilding.neighborhood || '');
+    setBldgExactAddressInput(activeBuilding.exactAddress || '');
+    setBldgLandmarkInput(activeBuilding.landmarkDescription || '');
+    setBldgMapsUrlInput(activeBuilding.googleMapsUrl || '');
+    getBuildingPhotosFromIDB(activeBuilding.id).then(setBuildingPhotos);
+  }, [activeBuilding]);
+
+  const handleSaveBuildingLocation = (e: React.FormEvent) => {
+    e.preventDefault();
+    updateBuildingInfo(activeBuilding.id, {
+      city: bldgCityInput.trim(),
+      neighborhood: bldgNeighborhoodInput.trim(),
+      exactAddress: bldgExactAddressInput.trim(),
+      landmarkDescription: bldgLandmarkInput.trim(),
+      googleMapsUrl: bldgMapsUrlInput.trim(),
+    });
+    setShowLocationEditor(false);
+    setRefreshMsg(`Emplacement et repère géographique de « ${activeBuilding.name} » mis à jour !`);
+    setTimeout(() => setRefreshMsg(null), 4000);
+  };
+
+  const handleUploadBuildingPhotoInline = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setIsUploadingBldgPhoto(true);
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      await new Promise<void>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          const dataUrl = String(reader.result || '');
+          const record: BuildingPhotoRecord = {
+            id: `bldg-photo-${activeBuilding.id}-${Date.now()}-${i}`,
+            buildingId: activeBuilding.id,
+            buildingName: activeBuilding.name,
+            caption: photoCaptionInput.trim() || file.name.replace(/\.[^/.]+$/, ''),
+            fileName: file.name,
+            mimeType: file.type || 'image/jpeg',
+            fileSize: file.size,
+            uploadedAt: new Date().toISOString().slice(0, 10),
+            dataUrl,
+          };
+          await saveBuildingPhotoToIDB(record);
+          resolve();
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    const refreshed = await getBuildingPhotosFromIDB(activeBuilding.id);
+    setBuildingPhotos(refreshed);
+    setPhotoCaptionInput('');
+    setIsUploadingBldgPhoto(false);
+    setRefreshMsg(`Photo(s) ajoutée(s) à la galerie de « ${activeBuilding.name} » (IndexedDB) !`);
+    setTimeout(() => setRefreshMsg(null), 4000);
+    e.target.value = '';
+  };
+
+  const handleRemoveBuildingPhoto = async (photoId: string) => {
+    await deleteBuildingPhotoFromIDB(photoId);
+    const refreshed = await getBuildingPhotosFromIDB(activeBuilding.id);
+    setBuildingPhotos(refreshed);
+    if (lightboxPhoto?.id === photoId) setLightboxPhoto(null);
+  };
+
+  const handleConfirmDeleteUnit = () => {
+    if (!unitToDelete) return;
+    const code = unitToDelete.code;
+    deleteUnit(unitToDelete.id);
+    setUnitToDelete(null);
+    setRefreshMsg(`Le bien « ${code} » a été supprimé du plan.`);
+    setTimeout(() => setRefreshMsg(null), 4000);
+  };
+
+  const handleConfirmDeleteBuilding = () => {
+    const name = activeBuilding.name;
+    deleteBuilding(activeBuilding.id);
+    setConfirmDeleteActiveBuilding(false);
+    setRefreshMsg(`L'immeuble « ${name} » a été supprimé.`);
+    setTimeout(() => setRefreshMsg(null), 4000);
+  };
+
+  const handleConfirmRestoreMoro = () => {
+    restoreDefaultMoroBuilding();
+    setConfirmRestoreDefaultMoro(false);
+    setRefreshMsg('La Résidence Moro (35 unités par défaut) a été restaurée avec succès !');
+    setTimeout(() => setRefreshMsg(null), 4000);
+  };
 
   // Modale "+ Ajouter un bien personnalisé" (Appartement, Boutique, Magasin, Studio, Chambre)
   const [showAddUnitModal, setShowAddUnitModal] = useState(false);
@@ -435,6 +570,232 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
         </motion.div>
       </div>
 
+      {/* FICHE DE L'IMMEUBLE ACTIF : EMPLACEMENT, GOOGLE MAPS, GALERIE PHOTOS (INDEXEDDB) & SUPPRESSION */}
+      <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200 shadow-sm space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className="px-3 py-1 rounded-xl bg-[#0F172A] text-white font-extrabold text-sm flex items-center gap-1.5">
+                <Building className="w-4 h-4 text-blue-400" />
+                <span>{activeBuilding.name}</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-blue-50 text-[#1E3A8A] border border-blue-200 text-xs sm:text-sm font-bold">
+                <MapPin className="w-4 h-4 text-[#2563EB]" />
+                <span>
+                  {activeBuilding.city} — {activeBuilding.neighborhood}
+                  {activeBuilding.exactAddress ? ` • ${activeBuilding.exactAddress}` : ''}
+                </span>
+              </span>
+              {activeBuilding.googleMapsUrl && (
+                <a
+                  href={activeBuilding.googleMapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-[#065F46] border border-emerald-200 text-xs font-extrabold transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Voir sur Google Maps</span>
+                </a>
+              )}
+            </div>
+            {activeBuilding.landmarkDescription && (
+              <p className="text-xs sm:text-sm text-slate-600 font-medium pl-1">
+                📍 <strong>Repère géographique :</strong> {activeBuilding.landmarkDescription}
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowLocationEditor(!showLocationEditor)}
+              className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#0F172A] font-extrabold text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer"
+            >
+              <Pencil className="w-3.5 h-3.5 text-[#2563EB]" />
+              <span>{showLocationEditor ? 'Fermer l’éditeur' : 'Modifier l’emplacement'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setConfirmRestoreDefaultMoro(true)}
+              className="px-3.5 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#1E3A8A] border border-blue-200 font-extrabold text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-[#2563EB]" />
+              <span>Restaurer la Résidence Moro par défaut</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setConfirmDeleteActiveBuilding(true)}
+              className="px-3.5 py-2 rounded-xl bg-red-50 hover:bg-[#EF4444] text-[#EF4444] hover:text-white border border-red-200 font-extrabold text-xs sm:text-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Supprimer cet immeuble</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Formulaire dépliable d'édition rapide de l'emplacement / localisation de l'immeuble */}
+        {showLocationEditor && (
+          <form
+            onSubmit={handleSaveBuildingLocation}
+            className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3"
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-extrabold uppercase text-slate-600 mb-1">
+                  Ville
+                </label>
+                <input
+                  type="text"
+                  value={bldgCityInput}
+                  onChange={(e) => setBldgCityInput(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-sm font-bold text-[#0F172A]"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-extrabold uppercase text-slate-600 mb-1">
+                  Quartier
+                </label>
+                <input
+                  type="text"
+                  value={bldgNeighborhoodInput}
+                  onChange={(e) => setBldgNeighborhoodInput(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-sm font-bold text-[#0F172A]"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-extrabold uppercase text-slate-600 mb-1">
+                  Adresse précise
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Rue Principale, entrée carrefour..."
+                  value={bldgExactAddressInput}
+                  onChange={(e) => setBldgExactAddressInput(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-sm font-semibold text-[#0F172A]"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-extrabold uppercase text-slate-600 mb-1">
+                  Repère géographique
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: À 150m du Campus, portail bleu..."
+                  value={bldgLandmarkInput}
+                  onChange={(e) => setBldgLandmarkInput(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-sm font-semibold text-[#0F172A]"
+                />
+              </div>
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <label className="block text-xs font-extrabold uppercase text-slate-600 mb-1">
+                    Lien Google Maps
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="https://maps.google.com/?q=..."
+                    value={bldgMapsUrlInput}
+                    onChange={(e) => setBldgMapsUrlInput(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-sm text-[#0F172A]"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1E3A8A] text-white font-extrabold text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer shrink-0"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Enregistrer</span>
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+
+        {/* Section Galerie : Photos & Visuels de l'Immeuble (Upload multiple IndexedDB + Lightbox plein écran) */}
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Camera className="w-5 h-5 text-[#2563EB]" />
+              <h3 className="text-sm sm:text-base font-extrabold text-[#0F172A]">
+                Photos & Visuels de l’Immeuble ({buildingPhotos.length})
+              </h3>
+              <span className="text-xs text-slate-500 hidden sm:inline">
+                • Stockage local IndexedDB haute capacité (cliquez sur une photo pour l’agrandir)
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                placeholder="Légende photo (optionnel)"
+                value={photoCaptionInput}
+                onChange={(e) => setPhotoCaptionInput(e.target.value)}
+                className="px-3 py-1.5 rounded-xl border border-slate-300 text-xs font-semibold text-[#0F172A] bg-slate-50"
+              />
+              <label className="px-3.5 py-2 rounded-xl bg-[#0F172A] hover:bg-[#2563EB] text-white font-extrabold text-xs flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs">
+                <Upload className="w-3.5 h-3.5" />
+                <span>
+                  {isUploadingBldgPhoto ? 'Ajout...' : '+ Ajouter des Photos de l’Immeuble'}
+                </span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleUploadBuildingPhotoInline}
+                  className="hidden"
+                />
+              </label>
+            </div>
+          </div>
+
+          {buildingPhotos.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 pt-1">
+              {buildingPhotos.map((photo) => (
+                <div
+                  key={photo.id}
+                  className="group relative rounded-2xl border border-slate-200 overflow-hidden bg-slate-100 shadow-2xs flex flex-col"
+                >
+                  <div
+                    onClick={() => setLightboxPhoto(photo)}
+                    className="relative h-28 w-full overflow-hidden cursor-pointer"
+                  >
+                    <img
+                      src={photo.dataUrl}
+                      alt={photo.caption}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                    <div className="absolute inset-0 bg-slate-950/0 group-hover:bg-slate-950/35 transition-colors flex items-center justify-center">
+                      <span className="opacity-0 group-hover:opacity-100 px-2.5 py-1 rounded-lg bg-white/95 text-[#0F172A] font-extrabold text-[11px] flex items-center gap-1 shadow-sm">
+                        <Eye className="w-3 h-3 text-[#2563EB]" />
+                        <span>Grand format</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div className="p-2 bg-white flex items-center justify-between gap-1.5">
+                    <span className="text-xs font-bold text-[#0F172A] truncate">
+                      {photo.caption}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveBuildingPhoto(photo.id)}
+                      title="Supprimer cette photo"
+                      className="p-1 rounded-lg bg-red-50 hover:bg-red-100 text-[#EF4444] shrink-0 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Barre de Contrôle du Plan : Étages + Ajout de Bien Multi-Types + Mode Couloir/Grille */}
       <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-sm space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -792,6 +1153,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                                   <UnitDoorCard
                                     unit={leftUnit}
                                     onSelectUnit={onSelectUnit}
+                                    onRequestDeleteUnit={(u) => setUnitToDelete(u)}
                                     settings={settings}
                                   />
                                 ) : isMissingOddDoor ? (
@@ -828,6 +1190,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                                   <UnitDoorCard
                                     unit={rightUnit}
                                     onSelectUnit={onSelectUnit}
+                                    onRequestDeleteUnit={(u) => setUnitToDelete(u)}
                                     settings={settings}
                                   />
                                 ) : (
@@ -854,6 +1217,7 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
                         <UnitDoorCard
                           unit={unit}
                           onSelectUnit={onSelectUnit}
+                          onRequestDeleteUnit={(u) => setUnitToDelete(u)}
                           settings={settings}
                         />
                       </motion.div>
@@ -1067,6 +1431,214 @@ export const BuildingFloorMap: React.FC<BuildingFloorMapProps> = ({ onSelectUnit
           </div>
         )}
       </AnimatePresence>
+
+      {/* APERÇU GRAND FORMAT (LIGHTBOX) DES PHOTOS DE L'IMMEUBLE */}
+      <AnimatePresence>
+        {lightboxPhoto && (
+          <div
+            onClick={() => setLightboxPhoto(null)}
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.92 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.92 }}
+              onClick={(e) => e.stopPropagation()}
+              className="max-w-5xl w-full bg-[#0F172A] rounded-3xl overflow-hidden border border-slate-700 shadow-2xl"
+            >
+              <div className="px-6 py-4 flex items-center justify-between border-b border-slate-800 text-white">
+                <div>
+                  <h4 className="font-extrabold text-base sm:text-lg">{lightboxPhoto.caption}</h4>
+                  <p className="text-xs text-slate-400">
+                    {lightboxPhoto.buildingName} • Ajoutée le {lightboxPhoto.uploadedAt}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveBuildingPhoto(lightboxPhoto.id)}
+                    className="px-3.5 py-2 rounded-xl bg-[#EF4444] hover:bg-red-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Supprimer</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLightboxPhoto(null)}
+                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+              <div className="p-4 flex items-center justify-center bg-slate-950 max-h-[78vh]">
+                <img
+                  src={lightboxPhoto.dataUrl}
+                  alt={lightboxPhoto.caption}
+                  className="max-h-[74vh] w-auto object-contain rounded-xl"
+                />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* FENÊTRE DE CONFIRMATION : SUPPRESSION D'UNE UNITÉ INDIVIDUELLE */}
+      <AnimatePresence>
+        {unitToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl border-2 border-[#EF4444] max-w-md w-full p-6 space-y-4"
+            >
+              <div className="flex items-center gap-3 text-[#EF4444]">
+                <div className="w-11 h-11 rounded-2xl bg-red-50 border border-red-200 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-6 h-6 text-[#EF4444]" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-extrabold text-[#0F172A]">
+                    Attention, êtes-vous sûr de vouloir supprimer ce bien ?
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Unité :{' '}
+                    <strong>
+                      {unitToDelete.code} ({getUnitTypeLabel(unitToDelete.type, unitToDelete.subTypeLabel)})
+                    </strong>
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Cette unité sera retirée du plan de l’immeuble « {activeBuilding.name} ». Vous
+                pourrez toujours restaurer la Résidence Moro par défaut en cas de besoin.
+              </p>
+
+              <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setUnitToDelete(null)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs sm:text-sm hover:bg-slate-100 cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteUnit}
+                  className="px-5 py-2.5 rounded-xl bg-[#EF4444] hover:bg-red-700 text-white font-extrabold text-xs sm:text-sm flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Oui, supprimer cette unité</span>
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* FENÊTRE DE CONFIRMATION : SUPPRESSION DE L'IMMEUBLE ACTIF */}
+      <AnimatePresence>
+        {confirmDeleteActiveBuilding && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl border-2 border-[#EF4444] max-w-md w-full p-6 space-y-4"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-red-50 border border-red-200 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-6 h-6 text-[#EF4444]" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-extrabold text-[#0F172A]">
+                    Attention, êtes-vous sûr de vouloir supprimer ce bien ?
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Immeuble : <strong>{activeBuilding.name}</strong> ({units.length} unités)
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Cette action retirera l’immeuble « {activeBuilding.name} » de votre gestionnaire de
+                propriétés. Si c’est le seul immeuble restant, la Résidence Moro par défaut sera
+                rechargée automatiquement.
+              </p>
+
+              <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteActiveBuilding(false)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs sm:text-sm hover:bg-slate-100 cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteBuilding}
+                  className="px-5 py-2.5 rounded-xl bg-[#EF4444] hover:bg-red-700 text-white font-extrabold text-xs sm:text-sm flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Oui, supprimer cet immeuble</span>
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* FENÊTRE DE CONFIRMATION : RESTAURER LA RÉSIDENCE MORO PAR DÉFAUT */}
+      <AnimatePresence>
+        {confirmRestoreDefaultMoro && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl border-2 border-[#2563EB] max-w-md w-full p-6 space-y-4"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center shrink-0">
+                  <RotateCcw className="w-6 h-6 text-[#2563EB]" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-extrabold text-[#0F172A]">
+                    Restaurer la Résidence Moro par défaut
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Configuration initiale : 35 unités (8 au RDC + 3 étages de 9 portes)
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Voulez-vous restaurer l’intégralité des 35 unités par défaut de la Résidence Moro
+                (chambres et studios dans leur disposition d’origine) ?
+              </p>
+
+              <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setConfirmRestoreDefaultMoro(false)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs sm:text-sm hover:bg-slate-100 cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmRestoreMoro}
+                  className="px-5 py-2.5 rounded-xl bg-[#2563EB] hover:bg-[#1E3A8A] text-white font-extrabold text-xs sm:text-sm flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>Confirmer la restauration</span>
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -1077,10 +1649,16 @@ interface UnitDoorCardProps {
     unit: RentalUnit,
     initialModalTab?: 'INFO' | 'PAYMENT' | 'UTILITIES' | 'DOCUMENTS'
   ) => void;
+  onRequestDeleteUnit: (unit: RentalUnit) => void;
   settings: ReturnType<typeof useApp>['settings'];
 }
 
-const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, settings }) => {
+const UnitDoorCard: React.FC<UnitDoorCardProps> = ({
+  unit,
+  onSelectUnit,
+  onRequestDeleteUnit,
+  settings,
+}) => {
   const statusCfg = getStatusConfig(unit.status);
   const daysUntilDue = unit.tenant ? getDaysUntilDue(unit.tenant.rentValidUntil) : 999;
   const isDueSoon =
@@ -1104,7 +1682,7 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
       className={`w-full bg-white rounded-2xl border-2 ${statusCfg.borderCard} shadow-sm hover:shadow-md transition-all p-4 sm:p-5 flex flex-col justify-between`}
     >
       <div>
-        {/* Ligne 1 : Code Porte + Type + Statut Couleur */}
+        {/* Ligne 1 : Code Porte + Type + Statut Couleur + Bouton Supprimer Unité */}
         <div className="flex items-start justify-between gap-2 mb-3">
           <div className="flex items-center gap-2.5">
             <button
@@ -1142,12 +1720,23 @@ const UnitDoorCard: React.FC<UnitDoorCardProps> = ({ unit, onSelectUnit, setting
             </div>
           </div>
 
-          <span
-            className={`px-3 py-1 rounded-full text-xs font-extrabold border flex items-center gap-1.5 shrink-0 ${statusCfg.bgBadge}`}
-          >
-            <span className={`w-2 h-2 rounded-full ${statusCfg.dotColor}`} />
-            <span>{statusCfg.label}</span>
-          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span
+              className={`px-3 py-1 rounded-full text-xs font-extrabold border flex items-center gap-1.5 ${statusCfg.bgBadge}`}
+            >
+              <span className={`w-2 h-2 rounded-full ${statusCfg.dotColor}`} />
+              <span>{statusCfg.label}</span>
+            </span>
+
+            <button
+              type="button"
+              onClick={() => onRequestDeleteUnit(unit)}
+              title={`Supprimer l'unité ${unit.code}`}
+              className="p-1.5 rounded-xl bg-slate-100 hover:bg-red-50 text-slate-400 hover:text-[#EF4444] border border-transparent hover:border-red-200 transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         {/* ALERTE PRÉVENTIVE À 3 MOIS (<= 3 MOIS RESTANTS) SUR LA CARTE DU LOGEMENT */}

@@ -86,6 +86,7 @@ export const UnitSlideOverModal: React.FC<UnitSlideOverModalProps> = ({
     activeBuilding,
     updateUnitAndTenant,
     vacateUnit,
+    deleteUnit,
     updateUtilityReading,
     recordPayment,
   } = useApp();
@@ -97,6 +98,7 @@ export const UnitSlideOverModal: React.FC<UnitSlideOverModalProps> = ({
   );
   const [savedToast, setSavedToast] = useState<string | null>(null);
   const [lastCreatedReceipt, setLastCreatedReceipt] = useState<PaymentRecord | null>(null);
+  const [showDeleteUnitConfirm, setShowDeleteUnitConfirm] = useState(false);
 
   // États du formulaire Locataire & Garant
   const [monthlyRent, setMonthlyRent] = useState<number>(32000);
@@ -515,14 +517,65 @@ export const UnitSlideOverModal: React.FC<UnitSlideOverModalProps> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
-            >
-              <X className="w-6 h-6" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteUnitConfirm(true)}
+                title={`Supprimer l'unité ${liveUnit.code}`}
+                className="px-3 py-2 rounded-xl bg-red-500/20 hover:bg-[#EF4444] text-red-200 hover:text-white border border-red-400/30 font-extrabold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Supprimer l’unité</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
           </div>
+
+          {/* Confirmation de suppression de l'unité individuelle */}
+          {showDeleteUnitConfirm && (
+            <div className="bg-red-50 border-b-2 border-[#EF4444] px-6 py-4 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <ShieldAlert className="w-5 h-5 text-[#EF4444] shrink-0" />
+                <div>
+                  <div className="text-sm font-extrabold text-[#991B1B]">
+                    Attention, êtes-vous sûr de vouloir supprimer ce bien ({liveUnit.code}) ?
+                  </div>
+                  <p className="text-xs text-red-900">
+                    Cette unité ({getUnitTypeLabel(liveUnit.type, liveUnit.subTypeLabel)}) sera
+                    retirée du plan de l’immeuble.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteUnitConfirm(false)}
+                  className="px-3.5 py-2 rounded-xl bg-white border border-slate-300 text-slate-700 font-bold text-xs cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    deleteUnit(liveUnit.id);
+                    setShowDeleteUnitConfirm(false);
+                    onClose();
+                  }}
+                  className="px-4 py-2 rounded-xl bg-[#EF4444] hover:bg-red-700 text-white font-extrabold text-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Confirmer la suppression</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Barre de sous-onglets du Slide-Over (4 Onglets V2) */}
           <div className="bg-white border-b border-slate-200 px-6 py-3 flex flex-wrap items-center gap-2 shrink-0">

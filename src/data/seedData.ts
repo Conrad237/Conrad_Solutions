@@ -31,6 +31,10 @@ export const INITIAL_BUILDINGS: BuildingConfig[] = [
     name: DEFAULT_LANDLORD_CONFIG.residenceName,
     city: DEFAULT_LANDLORD_CONFIG.city,
     neighborhood: DEFAULT_LANDLORD_CONFIG.neighborhood,
+    exactAddress: 'Avenue Principale — Cité Universitaire & Résidentielle, Yaoundé',
+    landmarkDescription:
+      'À 150m du carrefour principal, portail gris ardoise avec château d’eau (Forage autonome)',
+    googleMapsUrl: 'https://maps.google.com/?q=Yaounde+Cameroun',
     defaultRoomPrice: DEFAULT_ROOM_PRICE,
     defaultStudioPrice: DEFAULT_STUDIO_PRICE,
     defaultApartmentPrice: DEFAULT_APARTMENT_PRICE,
